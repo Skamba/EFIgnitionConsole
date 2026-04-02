@@ -1,0 +1,7 @@
+{
+  "name": "NewLiquidCrystal",
+  "version": "1.5.0",
+  "description": "Vendored subset of fmalpartida's New-LiquidCrystal library for this project.",
+  "frameworks": "arduino",
+  "platforms": "atmelavr"
+}
