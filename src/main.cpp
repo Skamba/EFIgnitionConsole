@@ -1,6 +1,5 @@
 #include <Arduino.h>
 #include <LiquidCrystal_I2C.h>
-#include <math.h>
 #include <string.h>
 
 LiquidCrystal_I2C lcd(0x27, 2, 1, 0, 4, 5, 6, 7, 3, POSITIVE);
@@ -13,6 +12,7 @@ HardwareSerial &speeduinoSerial = Serial1;  // RX1 = 19, TX1 = 18
 // 20201021 | added moving bars
 // 20210103 | fixed temperature reading
 // 20260402 | migrated to enhanced "n" command and added fuel pressure
+// 20260403 | removed moving bars and moved fuel pressure to last line
 //
 // See https://speeduino.com/wiki/index.php/Secondary_Serial_IO_interface
 
@@ -58,7 +58,6 @@ constexpr byte TEST_OUTPUTS         =  38;
 constexpr byte OXIGEN2              =  39;
 constexpr byte BARO                 =  40;
 constexpr byte FUEL_PRESSURE        = 103;
-constexpr byte OIL_PRESSURE         = 104;
 
 constexpr byte BIT_ENGINE_RUN       =   0;
 constexpr byte BIT_ENGINE_CRANK     =   1;
@@ -88,130 +87,12 @@ constexpr byte PACKET_STATUS_HEADER_INVALID    = 3;
 constexpr byte PACKET_STATUS_INCOMPLETE        = 4;
 constexpr byte PACKET_STATUS_TOO_LONG          = 5;
 
-namespace {
-
-byte CHAR10[8] = {
-  B11100,
-  B11100,
-  B11100,
-  B11100,
-  B00000,
-  B00000,
-  B00000,
-  B00000
-};
-
-byte CHAR01[8] = {
-  B00000,
-  B00000,
-  B00000,
-  B00000,
-  B11100,
-  B11100,
-  B11100,
-  B11100
-};
-
-byte CHAR11[8] = {
-  B11100,
-  B11100,
-  B11100,
-  B11100,
-  B11100,
-  B11100,
-  B11100,
-  B11100
-};
-
-byte CHAR20[8] = {
-  B11111,
-  B11111,
-  B11111,
-  B11111,
-  B00000,
-  B00000,
-  B00000,
-  B00000
-};
-
-byte CHAR02[8] = {
-  B00000,
-  B00000,
-  B00000,
-  B00000,
-  B11111,
-  B11111,
-  B11111,
-  B11111
-};
-
-byte CHAR21[8] = {
-  B11111,
-  B11111,
-  B11111,
-  B11111,
-  B11100,
-  B11100,
-  B11100,
-  B11100
-};
-
-byte CHAR12[8] = {
-  B11100,
-  B11100,
-  B11100,
-  B11100,
-  B11111,
-  B11111,
-  B11111,
-  B11111
-};
-
-byte CHAR22[8] = {
-  B11111,
-  B11111,
-  B11111,
-  B11111,
-  B11111,
-  B11111,
-  B11111,
-  B11111
-};
-
-}  // namespace
-
 constexpr int NUM_DISPLAY_COLS = 20;
 constexpr int NUM_DISPLAY_ROWS = 4;
-
-constexpr byte SPACE = 32;
-constexpr byte C10 = 0;
-constexpr byte C01 = 1;
-constexpr byte C11 = 2;
-constexpr byte C20 = 3;
-constexpr byte C02 = 4;
-constexpr byte C21 = 5;
-constexpr byte C12 = 6;
-constexpr byte C22 = 7;
-
-const byte PATTERN[3][3] = {
-  {SPACE, C01, C02},
-  {C10, C11, C12},
-  {C20, C21, C22}
-};
 
 byte packet[MAX_PACKET_SIZE];  // More than enough for the maximum payload plus header.
 byte packetStatusCode = PACKET_STATUS_OK;
 unsigned long timeConsumedByReadingAndDisplaying;
-void registerCustomChars() {
-  lcd.createChar(C10, CHAR10);
-  lcd.createChar(C01, CHAR01);
-  lcd.createChar(C11, CHAR11);
-  lcd.createChar(C20, CHAR20);
-  lcd.createChar(C02, CHAR02);
-  lcd.createChar(C21, CHAR21);
-  lcd.createChar(C12, CHAR12);
-  lcd.createChar(C22, CHAR22);
-}
 
 void lcdprint(byte col, byte row, int num, const char *fmt) {
   static char numBuf[21];
@@ -241,51 +122,6 @@ char *engineStatus(byte status) {
   }
 
   return buf;
-}
-
-int activeCells(float value, float minValue, float maxValue, int num_cells) {
-  float interval = (maxValue - minValue) / (num_cells + 1);
-  int nrActiveCells = floor((value - minValue) / interval);
-
-  if (nrActiveCells < 0) {
-    nrActiveCells = 0;
-  }
-
-  if (nrActiveCells > num_cells) {
-    nrActiveCells = num_cells;
-  }
-
-  return nrActiveCells;
-}
-
-int numActiveCells(int pointer, int value) {
-  if (pointer < value) {
-    return 2;
-  }
-
-  if (pointer == value) {
-    return 1;
-  }
-
-  return 0;
-}
-
-void lcdRawBar(int p, int q, int num_cells) {
-  int numTop;
-  int numBottom;
-
-  for (int i = 1; i < num_cells; i = i + 2) {
-    numTop = numActiveCells(i, p);
-    numBottom = numActiveCells(i, q);
-    lcd.write(byte(PATTERN[numTop][numBottom]));
-  }
-}
-
-void lcdBar(float topValue, float topMinValue, float topMaxValue, float bottomValue, float bottomMinValue, float bottomMaxValue, int num_cols) {
-  int num_cells = 2 * num_cols;
-  int nrActiveTopCells = activeCells(topValue, topMinValue, topMaxValue, num_cells);
-  int nrActiveBottomCells = activeCells(bottomValue, bottomMinValue, bottomMaxValue, num_cells);
-  lcdRawBar(nrActiveTopCells, nrActiveBottomCells, num_cells);
 }
 
 byte requestAndReadPacket() {
@@ -350,7 +186,6 @@ byte requestAndReadPacket() {
 
 void setup() {
   lcd.begin(NUM_DISPLAY_COLS, NUM_DISPLAY_ROWS);
-  registerCustomChars();
 
   lcd.setCursor(0, 0);
   lcd.print("Inspuiting wordt");
@@ -382,28 +217,23 @@ void loop() {
     lcdprint(0, 1, packet[PAYLOAD_OFFSET + MAP_HB] * 255 + packet[PAYLOAD_OFFSET + MAP_LB], "%4dkPa ");
     lcdprint(8, 1, packet[PAYLOAD_OFFSET + IDLE_LOAD], "%3d ");
     lcdprint(12, 1, packet[PAYLOAD_OFFSET + TPS], "%3d ");
-    lcdprint(16, 1, packet[PAYLOAD_OFFSET + FUEL_PRESSURE] / 100, "%3dbar");
+    lcdprint(16, 1, "    ");
 
     lcdprint(0, 2, packet[PAYLOAD_OFFSET + OXIGEN] / 10, "%2d.");
     lcdprint(3, 2, packet[PAYLOAD_OFFSET + OXIGEN] % 10, "%01dafr  ");
     lcdprint(14, 2, engineStatus(packet[PAYLOAD_OFFSET + ENGINE]));
 
-    lcd.setCursor(0, 3);
-    lcdBar(
-      float(packet[PAYLOAD_OFFSET + RPM_HB] * 255 + packet[PAYLOAD_OFFSET + RPM_LB]),
-      0.0,
-      7000.0,
-      float(packet[PAYLOAD_OFFSET + OXIGEN]) / 10.0,
-      10.0,
-      20.0,
-      NUM_DISPLAY_COLS
-    );
+    int fuelBar10 = (long(packet[PAYLOAD_OFFSET + FUEL_PRESSURE]) * 6895L + 5000L) / 10000L;
+    lcdprint(0, 3, fuelBar10 / 10, "%1d.");
+    lcdprint(2, 3, fuelBar10 % 10, "%1dbar            ");
+
+    lcdprint(19, 3, packetStatusCode, "%1d");
   }
   else {
-    lcdprint(0, 0, "Fout bij lezen:");
-    lcdprint(0, 1, packetStatusCode, "%1d");
-    lcdprint(0, 2, "                ");
-    lcdprint(0, 3, "                ");
+    lcdprint(0, 0, "Fout bij lezen:      ");
+    lcdprint(0, 1, packetStatusCode, "%1d                   ");
+    lcdprint(0, 2, "                    ");
+    lcdprint(0, 3, "                    ");
   }
 
   timeConsumedByReadingAndDisplaying = millis() - cycleStart;
