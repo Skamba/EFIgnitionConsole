@@ -1,11 +1,10 @@
 #include <Arduino.h>
 #include <LiquidCrystal_I2C.h>
-#include <SoftwareSerial.h>
 #include <math.h>
 #include <string.h>
 
 LiquidCrystal_I2C lcd(0x27, 2, 1, 0, 4, 5, 6, 7, 3, POSITIVE);
-SoftwareSerial mySerial2(10, 11);  // RX, TX
+HardwareSerial &speeduinoSerial = Serial1;  // RX1 = 19, TX1 = 18
 
 // Module for reading Speeduino's serial3 port and displaying it on a 20x4 LCD.
 //
@@ -18,76 +17,76 @@ SoftwareSerial mySerial2(10, 11);  // RX, TX
 // See https://speeduino.com/wiki/index.php/Secondary_Serial_IO_interface
 
 // Position numbers in Speeduino's real-time data block.
-const byte SQUIRT               =   1;
-const byte ENGINE               =   2;
-const byte DWELL                =   3;
-const byte MAP_LB               =   4;
-const byte MAP_HB               =   5;
-const byte IAT_PLUS_OFFSET      =   6;
-const byte COOLANT_PLUS_OFFSET  =   7;
-const byte BAT_CORRECTION       =   8;
-const byte BATTERY10            =   9;
-const byte OXIGEN               =  10;
-const byte EGO_CORRECTION       =  11;
-const byte IAT_CORRECTION       =  12;
-const byte WUE_CORRECTION       =  13;
-const byte RPM_LB               =  14;
-const byte RPM_HB               =  15;
-const byte TAE_AMOUNT           =  16;
-const byte CORRECTIONS          =  17;
-const byte VE                   =  18;
-const byte AFR_TARGET           =  19;
-const byte PW1_LB               =  20;
-const byte PW1_HB               =  21;
-const byte TPS_DOT              =  22;
-const byte ADVANCE_ANGLE        =  23;
-const byte TPS                  =  24;
-const byte LOOPS_PER_SECOND_LB  =  25;
-const byte LOOPS_PER_SECOND_HB  =  26;
-const byte FREE_RAM_LB          =  27;
-const byte FREE_RAM_HB          =  28;
-const byte BOOST_TARGET         =  29;
-const byte BOOST_DUTY           =  30;
-const byte SPARK                =  31;
-const byte RPM_DOT_LB           =  32;
-const byte RPM_DOT_HB           =  33;
-const byte ETHANOL_PCT          =  34;
-const byte FLEX_CORRECTION      =  35;
-const byte FLEX_IGN_CORRECTION  =  36;
-const byte IDLE_LOAD            =  37;
-const byte TEST_OUTPUTS         =  38;
-const byte OXIGEN2              =  39;
-const byte BARO                 =  40;
-const byte FUEL_PRESSURE        = 103;
-const byte OIL_PRESSURE         = 104;
+constexpr byte SQUIRT               =   1;
+constexpr byte ENGINE               =   2;
+constexpr byte DWELL                =   3;
+constexpr byte MAP_LB               =   4;
+constexpr byte MAP_HB               =   5;
+constexpr byte IAT_PLUS_OFFSET      =   6;
+constexpr byte COOLANT_PLUS_OFFSET  =   7;
+constexpr byte BAT_CORRECTION       =   8;
+constexpr byte BATTERY10            =   9;
+constexpr byte OXIGEN               =  10;
+constexpr byte EGO_CORRECTION       =  11;
+constexpr byte IAT_CORRECTION       =  12;
+constexpr byte WUE_CORRECTION       =  13;
+constexpr byte RPM_LB               =  14;
+constexpr byte RPM_HB               =  15;
+constexpr byte TAE_AMOUNT           =  16;
+constexpr byte CORRECTIONS          =  17;
+constexpr byte VE                   =  18;
+constexpr byte AFR_TARGET           =  19;
+constexpr byte PW1_LB               =  20;
+constexpr byte PW1_HB               =  21;
+constexpr byte TPS_DOT              =  22;
+constexpr byte ADVANCE_ANGLE        =  23;
+constexpr byte TPS                  =  24;
+constexpr byte LOOPS_PER_SECOND_LB  =  25;
+constexpr byte LOOPS_PER_SECOND_HB  =  26;
+constexpr byte FREE_RAM_LB          =  27;
+constexpr byte FREE_RAM_HB          =  28;
+constexpr byte BOOST_TARGET         =  29;
+constexpr byte BOOST_DUTY           =  30;
+constexpr byte SPARK                =  31;
+constexpr byte RPM_DOT_LB           =  32;
+constexpr byte RPM_DOT_HB           =  33;
+constexpr byte ETHANOL_PCT          =  34;
+constexpr byte FLEX_CORRECTION      =  35;
+constexpr byte FLEX_IGN_CORRECTION  =  36;
+constexpr byte IDLE_LOAD            =  37;
+constexpr byte TEST_OUTPUTS         =  38;
+constexpr byte OXIGEN2              =  39;
+constexpr byte BARO                 =  40;
+constexpr byte FUEL_PRESSURE        = 103;
+constexpr byte OIL_PRESSURE         = 104;
 
-const byte BIT_ENGINE_RUN       =   0;
-const byte BIT_ENGINE_CRANK     =   1;
-const byte BIT_ENGINE_ASE       =   2;
-const byte BIT_ENGINE_WARMUP    =   3;
-const byte BIT_ENGINE_ACC       =   4;
-const byte BIT_ENGINE_DCC       =   5;
-const byte BIT_ENGINE_MAPACC    =   6;
-const byte BIT_ENGINE_MAPDCC    =   7;
+constexpr byte BIT_ENGINE_RUN       =   0;
+constexpr byte BIT_ENGINE_CRANK     =   1;
+constexpr byte BIT_ENGINE_ASE       =   2;
+constexpr byte BIT_ENGINE_WARMUP    =   3;
+constexpr byte BIT_ENGINE_ACC       =   4;
+constexpr byte BIT_ENGINE_DCC       =   5;
+constexpr byte BIT_ENGINE_MAPACC    =   6;
+constexpr byte BIT_ENGINE_MAPDCC    =   7;
 
 const char ENGINE_STATUS_CHAR[] = {'R', 'C', 'A', 'W', 'a', 'd', '<', '>'};
 const char ADVANCE_FORMAT[] = {'%', '3', 'd', char(223), ' ', '\0'};
 
-const int TEMPERATURE_OFFSET = 40;
-const unsigned long WAITING_INTERVAL = 100UL;
-const unsigned long EXTRA_BYTE_WAITING_INTERVAL = 5UL;
-const unsigned long POLLING_INTERVAL = 1000UL;
+constexpr int TEMPERATURE_OFFSET = 40;
+constexpr unsigned long WAITING_INTERVAL = 100UL;
+constexpr unsigned long EXTRA_BYTE_WAITING_INTERVAL = 5UL;
+constexpr unsigned long POLLING_INTERVAL = 1000UL;
 
-const byte HEADER_SIZE = 3;
-const byte PAYLOAD_OFFSET = HEADER_SIZE - 1;
-const int MAX_PACKET_SIZE = 300;
+constexpr byte HEADER_SIZE = 3;
+constexpr byte PAYLOAD_OFFSET = HEADER_SIZE - 1;
+constexpr int MAX_PACKET_SIZE = 300;
 
-const byte PACKET_STATUS_OK                = 0;
-const byte PACKET_STATUS_OVERFLOW          = 1;
-const byte PACKET_STATUS_HEADER_INCOMPLETE = 2;
-const byte PACKET_STATUS_HEADER_INVALID    = 3;
-const byte PACKET_STATUS_INCOMPLETE        = 4;
-const byte PACKET_STATUS_TOO_LONG          = 5;
+constexpr byte PACKET_STATUS_OK                = 0;
+constexpr byte PACKET_STATUS_OVERFLOW          = 1;
+constexpr byte PACKET_STATUS_HEADER_INCOMPLETE = 2;
+constexpr byte PACKET_STATUS_HEADER_INVALID    = 3;
+constexpr byte PACKET_STATUS_INCOMPLETE        = 4;
+constexpr byte PACKET_STATUS_TOO_LONG          = 5;
 
 namespace {
 
@@ -181,18 +180,18 @@ byte CHAR22[8] = {
 
 }  // namespace
 
-const int NUM_DISPLAY_COLS = 20;
-const int NUM_DISPLAY_ROWS = 4;
+constexpr int NUM_DISPLAY_COLS = 20;
+constexpr int NUM_DISPLAY_ROWS = 4;
 
-const byte SPACE = 32;
-const byte C10 = 0;
-const byte C01 = 1;
-const byte C11 = 2;
-const byte C20 = 3;
-const byte C02 = 4;
-const byte C21 = 5;
-const byte C12 = 6;
-const byte C22 = 7;
+constexpr byte SPACE = 32;
+constexpr byte C10 = 0;
+constexpr byte C01 = 1;
+constexpr byte C11 = 2;
+constexpr byte C20 = 3;
+constexpr byte C02 = 4;
+constexpr byte C21 = 5;
+constexpr byte C12 = 6;
+constexpr byte C22 = 7;
 
 const byte PATTERN[3][3] = {
   {SPACE, C01, C02},
@@ -297,15 +296,15 @@ byte requestAndReadPacket() {
   bool extraBytesReceived = false;
 
   memset(packet, 0, sizeof(packet));
-  mySerial2.print("n");
+  speeduinoSerial.print("n");
 
   // Read until the expected packet length is complete or the timeout expires.
   while ((millis() - readStart) < WAITING_INTERVAL) {
-    if (mySerial2.available() == 0) {
+    if (speeduinoSerial.available() == 0) {
       continue;
     }
 
-    incomingByte = mySerial2.read();
+    incomingByte = speeduinoSerial.read();
 
     if (bytesInPacket < MAX_PACKET_SIZE) {
       packet[bytesInPacket] = incomingByte;
@@ -316,7 +315,6 @@ byte requestAndReadPacket() {
       if ((packet[0] != 'n') || (packet[1] != '2')) {
         return PACKET_STATUS_HEADER_INVALID;
       }
-
       expectedPacketSize = HEADER_SIZE + packet[2];
     }
 
@@ -333,19 +331,14 @@ byte requestAndReadPacket() {
     return PACKET_STATUS_INCOMPLETE;
   }
 
-  if (bytesInPacket > expectedPacketSize) {
-    return PACKET_STATUS_TOO_LONG;
-  }
-
   // Wait a little longer for unexpected trailing bytes and discard them if seen.
   readStart = millis();
   while ((millis() - readStart) < EXTRA_BYTE_WAITING_INTERVAL) {
-    if (mySerial2.available() == 0) {
+    if (speeduinoSerial.available() == 0) {
       continue;
     }
-
     extraBytesReceived = true;
-    mySerial2.read();
+    speeduinoSerial.read();
   }
 
   if (extraBytesReceived) {
@@ -372,7 +365,7 @@ void setup() {
 
   lcd.backlight();
   lcd.clear();
-  mySerial2.begin(115200);
+  speeduinoSerial.begin(115200);
 }
 
 void loop() {
@@ -405,6 +398,12 @@ void loop() {
       20.0,
       NUM_DISPLAY_COLS
     );
+  }
+  else {
+    lcdprint(0, 0, "Fout bij lezen:");
+    lcdprint(0, 1, packetStatusCode, "%1d");
+    lcdprint(0, 2, "                ");
+    lcdprint(0, 3, "                ");
   }
 
   timeConsumedByReadingAndDisplaying = millis() - cycleStart;
