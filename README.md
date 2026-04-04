@@ -14,7 +14,8 @@ This repository was cloned from the original GitHub project so the existing Git 
 ## Features
 
 - Uses Speeduino's enhanced `"n"` command for the larger real-time data block
-- Displays fuel pressure in addition to the original values
+- Expects the Speeduino secondary serial protocol to be set to `Generic (Fixed List)`
+- Displays a configurable pressure channel on the last line (fuel pressure by default)
 - Keeps the firmware logic in a single `main.cpp` while the project is still evolving
 
 ## Development
