@@ -1,39 +1,87 @@
-The Speeduino can react on commands given on its serial ports. One of those ports is Speeduino’s usb port. 
-This is also the port TunerStudio uses to communicate. 
+The Speeduino can react to commands on its serial ports. One of those ports is the
+regular USB port, which TunerStudio also uses.
 
-Personally, I didn’t want to use that usb port. I prefer to use the usb cable only for TunerStudio and use another port 
-for reading values with another Arduino. No hassle with changing cables.
+For this project it is more practical to leave the USB connection dedicated to
+TunerStudio and use Speeduino's secondary serial port for the display helper Arduino.
+That way there is no need to swap cables.
 
-Speeduino has a “secondary” port. You have to enable it in ‘Accessories’ in TunerStudio (See enableSecondarySerialInterface.png)
+Enable the secondary interface in TunerStudio under Accessories. The firmware in this
+repository expects the protocol to be set to "Generic (Fixed List)".
+See docs/images/enableSecondarySerialInterface.png.
 
-To make things complicated, Speeduino’s secondary port is associated with Arduino Mega’s “Serial3” port. 
-Mega’s Serial3 can be found on the Mega pins 14 (transmit) and 15 (receive). 
-See pinoutMega2560.png for their location.
+On a Speeduino based on the Arduino Mega 2560, the secondary interface is tied to
+Serial3:
+- Speeduino TX3 = pin 14
+- Speeduino RX3 = pin 15
 
-You mission, should you choose to accept it, is to locate these pins on your Speeduino board and solder wires on them. 
-In connectingPin14and15.jpg you can see what I did.
+See docs/images/pinoutMega2560.png for their location. In
+docs/images/connectingPin14and15.jpg you can see an example of how these wires were
+added on the Speeduino board.
 
-I preferred to protect the ports with resistors with a value of 10 k. The rationale is that if you accidentally short-circuit
-a wire no damage will be done. Since for the communication only very small currents are used, a resistor has no negative efect. 
-I added two dupont pins for easy removal of the wires to the helper-arduino. 
+I used 10k resistors in series with the serial wires. The goal is simply to make the
+connection a bit more forgiving if a wire is accidentally shorted. For this low-current
+serial link, that extra resistance has not caused problems in practice.
 
-The code for the helper Arduino can be found in SpeeduinoConsole.ino. In there you can read that the helper-arduino 
-uses the pins 10 (receive) and 11 (transmit). 
-The transmitter from the Speeduino (blue wire) must be connected with the receiver of the helper-arduino. 
-The other (green wire) connects the receiver of the Speeduino with the transmitter of the helper. 
+Current helper-Arduino wiring
 
-In helperArduino.jpg you can get an idea of the wiring of the help-arduino. I’m not sure if it is of any help. 
-You can see the L78S05 voltage regulator that powers the helper-arduino. (I already burned the Speeduino regulator 
-by overloading it, so this one gets his own regulator).
-Maybe you can see a white cable. That is for future use (knock-detection).
+The current Lomax version no longer uses a software serial port on pins 10 and 11.
+The helper firmware now uses the Arduino Mega 2560 hardware serial port Serial1.
 
+Helper Arduino Serial1 pins:
+- RX1 = pin 19
+- TX1 = pin 18
 
-Stuff I bought:
-https://www.aliexpress.com/item/32920769382.html  (LCD Board 2004 20*4 LCD 20X4 3.3V/5V Blue/Yellow and Green Screen LCD2004 Display LCD Module LCD 2004 for arduino)
-https://www.aliexpress.com/item/2035880451.html   (IIC/I2C Interface LCD1602 Adapter Plate Board 5V LCD Adapter Converter Module For LCD1602 2004 LCD)
-https://www.aliexpress.com/item/4000235952850.html (Pro mini MEGA2560 <-- select the right board when ordering!)
+Wire the two boards as a crossed serial connection:
+- Speeduino TX3 pin 14 -> helper Arduino RX1 pin 19
+- Speeduino RX3 pin 15 -> helper Arduino TX1 pin 18
 
+Because of that change, the helper board must be Mega-2560-compatible or another
+board that offers the same hardware serial port in the code. The current PlatformIO
+configuration targets an Arduino Mega 2560.
 
-3d Printed Gauge:
-I made a display holder that fits in a 80 mm hole in my dashboard. See 3dPrintedGaugeFor20x4Display.jpg
-Thh stl-file ais available at https://www.thingiverse.com/thing:4697343
+The helper firmware lives in src/main.cpp in this repository.
+
+Protocol changes in this version
+
+This version sends the lowercase "n" command to Speeduino, not the older "a" command.
+That returns the larger fixed secondary-serial data block, which gives the display code
+access to more live values.
+
+The serial read loop was also tightened up:
+- it validates the response header before accepting a packet
+- it uses the payload length from the packet itself
+- it detects incomplete packets
+- it discards unexpected trailing bytes
+- it keeps a fixed polling interval so the display updates stay predictable
+
+In practice this makes the display more tolerant of bad serial data and quicker to
+recover when a read goes wrong.
+
+Photos
+
+docs/images/helperArduino.jpg still gives a useful impression of the helper hardware
+and regulator mounting, but treat the pin numbers in older photos or notes with care:
+the current wiring uses Serial1 on pins 18 and 19, not the earlier software-serial
+pair.
+
+Maybe you can also spot a white cable in the photo. That one was intended for future
+knock-detection work.
+
+Stuff I bought
+
+https://www.aliexpress.com/item/32920769382.html
+(LCD Board 2004 20x4 LCD module)
+
+https://www.aliexpress.com/item/2035880451.html
+(I2C adapter board for LCD1602/2004 displays)
+
+https://www.aliexpress.com/item/4000235952850.html
+(Pro mini MEGA2560 helper board - choose the correct Mega-based board when ordering)
+
+3D printed gauge
+
+I made a display holder that fits in an 80 mm hole in my dashboard.
+See docs/images/3dPrintedGaugeFor20x4Display.jpg.
+
+The STL file is available at:
+https://www.thingiverse.com/thing:4697343

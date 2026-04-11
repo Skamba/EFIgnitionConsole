@@ -56,7 +56,7 @@ constexpr byte RPM_DOT_HIGH            =  33;
 constexpr byte ETHANOL_PCT             =  34;
 constexpr byte FLEX_CORRECTION         =  35;
 constexpr byte FLEX_IGN_CORRECTION     =  36;
-constexpr byte IDLE_LOAD               =  37;
+constexpr byte IDLE_VALVE              =  37;
 constexpr byte TEST_OUTPUTS            =  38;
 constexpr byte O2_2                    =  39;
 constexpr byte BARO                    =  40;
@@ -109,7 +109,7 @@ constexpr byte IGN_LOAD_LOW            =  86;
 constexpr byte IGN_LOAD_HIGH           =  87;
 constexpr byte INJ_ANGLE_LOW           =  88;
 constexpr byte INJ_ANGLE_HIGH          =  89;
-constexpr byte IDLE_LOAD_2             =  90;  // Duplicate legacy slot for idleLoad.
+constexpr byte IDLE_VALVE_2            =  90;  // Duplicate legacy slot for Speeduino's idleLoad field.
 constexpr byte CL_IDLE_TARGET          =  91;
 constexpr byte MAP_DOT_DIV10           =  92;
 constexpr byte VVT1_ANGLE              =  93;
@@ -143,22 +143,20 @@ constexpr byte EMAP_HIGH               = 120;
 constexpr byte FAN_DUTY                = 121;
 constexpr byte AIRCON_STATUS           = 122;
 
-constexpr byte DISPLAY_PRESSURE        = FUEL_PRESSURE;
-
-constexpr byte BIT_ENGINE_RUN       =   0;
-constexpr byte BIT_ENGINE_CRANK     =   1;
-constexpr byte BIT_ENGINE_ASE       =   2;
-constexpr byte BIT_ENGINE_WARMUP    =   3;
-constexpr byte BIT_ENGINE_ACC       =   4;
-constexpr byte BIT_ENGINE_DCC       =   5;
-constexpr byte BIT_ENGINE_MAPACC    =   6;
-constexpr byte BIT_ENGINE_MAPDCC    =   7;
+constexpr byte BIT_ENGINE_RUN          =   0;
+constexpr byte BIT_ENGINE_CRANK        =   1;
+constexpr byte BIT_ENGINE_ASE          =   2;
+constexpr byte BIT_ENGINE_WARMUP       =   3;
+constexpr byte BIT_ENGINE_ACC          =   4;
+constexpr byte BIT_ENGINE_DCC          =   5;
+constexpr byte BIT_ENGINE_MAPACC       =   6;
+constexpr byte BIT_ENGINE_MAPDCC       =   7;
 
 const char ENGINE_STATUS_CHAR[] = {'R', 'C', 'A', 'W', 'a', 'd', '<', '>'};
 const char ADVANCE_FORMAT[] = {'%', '3', 'd', char(223), ' ', '\0'};
 constexpr int TEMPERATURE_OFFSET = 40;
 constexpr unsigned long WAITING_INTERVAL = 100UL;
-constexpr unsigned long EXTRA_BYTE_WAITING_INTERVAL = 5UL;
+constexpr unsigned long UNEXPECTED_BYTES_WAITING_INTERVAL = 5UL;
 constexpr unsigned long POLLING_INTERVAL = 1000UL;
 
 constexpr byte HEADER_SIZE = 3;
@@ -178,7 +176,6 @@ constexpr int NUM_DISPLAY_ROWS = 4;
 byte packet[MAX_PACKET_SIZE];  // More than enough for the maximum payload plus header.
 byte packetStatusCode = PACKET_STATUS_OK;
 byte payloadLength = 0;
-unsigned long timeConsumedByReadingAndDisplaying;
 
 void lcdprint(byte col, byte row, int num, const char *fmt) {
   static char numBuf[21];
@@ -188,11 +185,6 @@ void lcdprint(byte col, byte row, int num, const char *fmt) {
 }
 
 void lcdprint(byte col, byte row, const char *text) {
-  lcd.setCursor(col, row);
-  lcd.print(text);
-}
-
-void lcdprint(byte col, byte row, char *text) {
   lcd.setCursor(col, row);
   lcd.print(text);
 }
@@ -209,7 +201,7 @@ void lcdprintTenths(byte col, byte row, int value10, const char *suffix, byte wh
   lcd.print(numBuf);
 }
 
-char *engineStatus(byte status) {
+const char *engineStatus(byte status) {
   static char buf[7] = {' ', ' ', ' ', ' ', ' ', ' ', '\0'};
   int bufPos = 5;
 
@@ -227,24 +219,12 @@ char *engineStatus(byte status) {
   return buf;
 }
 
-int pressureBar10(byte pressureField) {
-  return (long(packet[PAYLOAD_OFFSET + pressureField]) * 6895L + 5000L) / 10000L;
-}
-
-bool packetHasField(byte field) {
-  return payloadLength > field;
-}
-
-uint16_t payloadU16(byte lowField, byte highField) {
-  return (uint16_t(packet[PAYLOAD_OFFSET + highField]) << 8) | packet[PAYLOAD_OFFSET + lowField];
-}
-
 byte requestAndReadPacket() {
   int bytesInPacket = 0;
   int expectedPacketSize = -1;
   byte incomingByte = 0;
   unsigned long readStart = millis();
-  bool extraBytesReceived = false;
+  bool unexpectedBytesReceived = false;
 
   memset(packet, 0, sizeof(packet));
   payloadLength = 0;
@@ -286,15 +266,15 @@ byte requestAndReadPacket() {
 
   // Wait a little longer for unexpected trailing bytes and discard them if seen.
   readStart = millis();
-  while ((millis() - readStart) < EXTRA_BYTE_WAITING_INTERVAL) {
+  while ((millis() - readStart) < UNEXPECTED_BYTES_WAITING_INTERVAL) {
     if (speeduinoSerial.available() == 0) {
       continue;
     }
-    extraBytesReceived = true;
+    unexpectedBytesReceived = true;
     speeduinoSerial.read();
   }
 
-  if (extraBytesReceived) {
+  if (unexpectedBytesReceived) {
     return PACKET_STATUS_TOO_LONG;
   }
 
@@ -326,35 +306,33 @@ void loop() {
   packetStatusCode = requestAndReadPacket();
 
   if (packetStatusCode == PACKET_STATUS_OK) {
-    lcdprint(0, 0, payloadU16(RPM_LOW, RPM_HIGH), "%4drpm ");
+    lcdprint(0, 0, (uint16_t(packet[PAYLOAD_OFFSET + RPM_HIGH]) << 8) | packet[PAYLOAD_OFFSET + RPM_LOW], "%4drpm ");
     lcdprint(8, 0, packet[PAYLOAD_OFFSET + ADVANCE], ADVANCE_FORMAT);
     lcdprint(12, 0, ((int)packet[PAYLOAD_OFFSET + COOLANT_WITH_OFFSET]) - TEMPERATURE_OFFSET, "%3dC");
     lcdprint(16, 0, ((int)packet[PAYLOAD_OFFSET + IAT_WITH_OFFSET]) - TEMPERATURE_OFFSET, "%3dC");
 
-    lcdprint(0, 1, payloadU16(MAP_LOW, MAP_HIGH), "%4dkPa ");
-    lcdprint(8, 1, packet[PAYLOAD_OFFSET + IDLE_LOAD], "%3d ");
+    lcdprint(0, 1, (uint16_t(packet[PAYLOAD_OFFSET + MAP_HIGH]) << 8) | packet[PAYLOAD_OFFSET + MAP_LOW], "%4dkPa ");
+    lcdprint(8, 1, packet[PAYLOAD_OFFSET + IDLE_VALVE], "%3d ");
     lcdprint(12, 1, packet[PAYLOAD_OFFSET + TPS], "%3d ");
     lcdprint(16, 1, packet[PAYLOAD_OFFSET+CORRECTIONS], "%3d%%");
 
     lcdprintTenths(0, 2, packet[PAYLOAD_OFFSET + O2], "afr ");
     lcdprintTenths(8, 2, packet[PAYLOAD_OFFSET + BATTERY10], "V ");
+    lcdprint(14, 2, engineStatus(packet[PAYLOAD_OFFSET + ENGINE_STATUS]));
 
     long fuelPressure10 = (long(packet[PAYLOAD_OFFSET + FUEL_PRESSURE]) * 6895L + 5000L) / 10000L;
     lcdprintTenths(0, 3, fuelPressure10, "bar            ", 1);
 
-    lcdprint(19, 3, packetStatusCode, "%1d");
+    lcdprint(19, 3, PACKET_STATUS_OK, "%1d");
   }
   else {
-    lcdprint(0, 0, "Fout bij lezen:      ");
-    lcdprint(0, 1, packetStatusCode, "%1d                   ");
-    lcdprint(0, 2, "                    ");
-    lcdprint(0, 3, "                   ");
-    lcdprint(19, 3, packetStatusCode, "%1d");
+       lcdprint(19, 3, packetStatusCode, "%1d");
   }
 
-
-  timeConsumedByReadingAndDisplaying = millis() - cycleStart;
-  if (timeConsumedByReadingAndDisplaying < POLLING_INTERVAL) {
-    delay(POLLING_INTERVAL - timeConsumedByReadingAndDisplaying);
+  while( millis() - cycleStart < POLLING_INTERVAL) {
+    // Wait until the polling interval has elapsed before starting the next cycle.
+    // This ensures a consistent update rate and prevents flooding the serial connection with requests.
+    delay(100);
   }
+  
 }
