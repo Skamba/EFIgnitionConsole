@@ -15,6 +15,9 @@ HardwareSerial &speeduinoSerial = Serial1;  // RX1 = 19, TX1 = 18
 // 20210103 | fixed temperature reading
 // 20260402 | migrated to enhanced "n" command and added fuel pressure
 // 20260403 | removed moving bars and moved fuel pressure to last line
+// 20260412 | cleaned up naming and payload access for display fields
+// 20260412 | improved serial buffer cleanup before and after packet reads
+// 20260412 | switched advance display to inline LCD degree escape and hid status 0
 //
 // See https://speeduino.com/wiki/index.php/Secondary_Serial_IO_interface
 
@@ -152,10 +155,8 @@ constexpr byte BIT_ENGINE_DCC          =   5;
 constexpr byte BIT_ENGINE_MAPACC       =   6;
 constexpr byte BIT_ENGINE_MAPDCC       =   7;
 
-const char ENGINE_STATUS_CHAR[] = {'R', 'C', 'A', 'W', 'a', 'd', '<', '>'};
-const char ADVANCE_FORMAT[] = {'%', '3', 'd', char(223), ' ', '\0'};
 constexpr int TEMPERATURE_OFFSET = 40;
-constexpr unsigned long WAITING_INTERVAL = 100UL;
+constexpr unsigned long PACKET_READ_TIMEOUT = 100UL;
 constexpr unsigned long UNEXPECTED_BYTES_WAITING_INTERVAL = 5UL;
 constexpr unsigned long POLLING_INTERVAL = 1000UL;
 
@@ -180,7 +181,7 @@ byte payloadLength = 0;
 void lcdprint(byte col, byte row, int num, const char *fmt) {
   static char numBuf[21];
   lcd.setCursor(col, row);
-  sprintf(numBuf, fmt, num);
+  snprintf(numBuf, sizeof(numBuf), fmt, num);
   lcd.print(numBuf);
 }
 
@@ -202,12 +203,13 @@ void lcdprintTenths(byte col, byte row, int value10, const char *suffix, byte wh
 }
 
 const char *engineStatus(byte status) {
+  static const char statusChars[] = {'R', 'C', 'A', 'W', 'a', 'd', '<', '>'};
   static char buf[7] = {' ', ' ', ' ', ' ', ' ', ' ', '\0'};
   int bufPos = 5;
 
   for (int bitNr = BIT_ENGINE_RUN; bitNr <= BIT_ENGINE_MAPDCC; bitNr++) {
     if (status & (1 << bitNr)) {
-      buf[bufPos] = ENGINE_STATUS_CHAR[bitNr];
+      buf[bufPos] = statusChars[bitNr];
       bufPos--;
     }
   }
@@ -219,19 +221,37 @@ const char *engineStatus(byte status) {
   return buf;
 }
 
+bool readExtraCharsIfAny() {
+  unsigned long readStart = millis();
+  bool discardedBytes = false;
+
+  while ((millis() - readStart) < UNEXPECTED_BYTES_WAITING_INTERVAL) {
+    if (speeduinoSerial.available() == 0) {
+      continue;
+    }
+    discardedBytes = true;
+    speeduinoSerial.read();
+  }
+
+  return discardedBytes;
+}
+
 byte requestAndReadPacket() {
   int bytesInPacket = 0;
   int expectedPacketSize = -1;
   byte incomingByte = 0;
+  bool hasDiscardedBufferedBytes = false;
   unsigned long readStart = millis();
-  bool unexpectedBytesReceived = false;
 
   memset(packet, 0, sizeof(packet));
   payloadLength = 0;
+
+  // Discard stale bytes from a previous read before requesting fresh data.
+  readExtraCharsIfAny();
   speeduinoSerial.print("n");
 
   // Read until the expected packet length is complete or the timeout expires.
-  while ((millis() - readStart) < WAITING_INTERVAL) {
+  while ((millis() - readStart) < PACKET_READ_TIMEOUT) {
     if (speeduinoSerial.available() == 0) {
       continue;
     }
@@ -245,6 +265,7 @@ byte requestAndReadPacket() {
 
     if (bytesInPacket == HEADER_SIZE) {
       if ((packet[0] != 'n') || (packet[1] != '2')) {
+        readExtraCharsIfAny();
         return PACKET_STATUS_HEADER_INVALID;
       }
       payloadLength = packet[2];
@@ -256,6 +277,9 @@ byte requestAndReadPacket() {
     }
   }
 
+  // Wait a little longer for unexpected trailing bytes and discard them if seen.
+  hasDiscardedBufferedBytes = readExtraCharsIfAny();
+
   if (bytesInPacket < HEADER_SIZE) {
     return PACKET_STATUS_HEADER_INCOMPLETE;
   }
@@ -264,17 +288,10 @@ byte requestAndReadPacket() {
     return PACKET_STATUS_INCOMPLETE;
   }
 
-  // Wait a little longer for unexpected trailing bytes and discard them if seen.
-  readStart = millis();
-  while ((millis() - readStart) < UNEXPECTED_BYTES_WAITING_INTERVAL) {
-    if (speeduinoSerial.available() == 0) {
-      continue;
-    }
-    unexpectedBytesReceived = true;
-    speeduinoSerial.read();
-  }
-
-  if (unexpectedBytesReceived) {
+  // This code assumes Speeduino's fixed-list "n2" payload keeps the existing field
+  // offsets stable and only ever grows with appended fields, not by removing fields
+  // before FUEL_PRESSURE.
+  if (hasDiscardedBufferedBytes) {
     return PACKET_STATUS_TOO_LONG;
   }
 
@@ -306,27 +323,29 @@ void loop() {
   packetStatusCode = requestAndReadPacket();
 
   if (packetStatusCode == PACKET_STATUS_OK) {
-    lcdprint(0, 0, (uint16_t(packet[PAYLOAD_OFFSET + RPM_HIGH]) << 8) | packet[PAYLOAD_OFFSET + RPM_LOW], "%4drpm ");
-    lcdprint(8, 0, packet[PAYLOAD_OFFSET + ADVANCE], ADVANCE_FORMAT);
-    lcdprint(12, 0, ((int)packet[PAYLOAD_OFFSET + COOLANT_WITH_OFFSET]) - TEMPERATURE_OFFSET, "%3dC");
-    lcdprint(16, 0, ((int)packet[PAYLOAD_OFFSET + IAT_WITH_OFFSET]) - TEMPERATURE_OFFSET, "%3dC");
+    const byte *payload = packet + PAYLOAD_OFFSET;
 
-    lcdprint(0, 1, (uint16_t(packet[PAYLOAD_OFFSET + MAP_HIGH]) << 8) | packet[PAYLOAD_OFFSET + MAP_LOW], "%4dkPa ");
-    lcdprint(8, 1, packet[PAYLOAD_OFFSET + IDLE_VALVE], "%3d ");
-    lcdprint(12, 1, packet[PAYLOAD_OFFSET + TPS], "%3d ");
-    lcdprint(16, 1, packet[PAYLOAD_OFFSET+CORRECTIONS], "%3d%%");
+    lcdprint(0, 0, (uint16_t(payload[RPM_HIGH]) << 8) | payload[RPM_LOW], "%4drpm ");
+    lcdprint(8, 0, payload[ADVANCE], "%3d\xDF ");  // The HD44780 LCD expects 0xDF for the degree symbol.
+    lcdprint(12, 0, ((int)payload[COOLANT_WITH_OFFSET]) - TEMPERATURE_OFFSET, "%3dC");
+    lcdprint(16, 0, ((int)payload[IAT_WITH_OFFSET]) - TEMPERATURE_OFFSET, "%3dC");
 
-    lcdprintTenths(0, 2, packet[PAYLOAD_OFFSET + O2], "afr ");
-    lcdprintTenths(8, 2, packet[PAYLOAD_OFFSET + BATTERY10], "V ");
-    lcdprint(14, 2, engineStatus(packet[PAYLOAD_OFFSET + ENGINE_STATUS]));
+    lcdprint(0, 1, (uint16_t(payload[MAP_HIGH]) << 8) | payload[MAP_LOW], "%4dkPa ");
+    lcdprint(8, 1, payload[IDLE_VALVE], "%3d ");
+    lcdprint(12, 1, payload[TPS], "%3d ");
+    lcdprint(16, 1, payload[CORRECTIONS], "%3d%%");
 
-    long fuelPressure10 = (long(packet[PAYLOAD_OFFSET + FUEL_PRESSURE]) * 6895L + 5000L) / 10000L;
+    lcdprintTenths(0, 2, payload[O2], "afr ");
+    lcdprintTenths(8, 2, payload[BATTERY10], "V ");
+    lcdprint(14, 2, engineStatus(payload[ENGINE_STATUS]));
+
+    long fuelPressure10 = (long(payload[FUEL_PRESSURE]) * 6895L + 5000L) / 10000L;
     lcdprintTenths(0, 3, fuelPressure10, "bar            ", 1);
 
-    lcdprint(19, 3, PACKET_STATUS_OK, "%1d");
+    lcdprint(19, 3, " ");
   }
   else {
-       lcdprint(19, 3, packetStatusCode, "%1d");
+    lcdprint(19, 3, packetStatusCode, "%1d");
   }
 
   while( millis() - cycleStart < POLLING_INTERVAL) {
