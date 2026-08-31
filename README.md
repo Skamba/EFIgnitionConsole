@@ -28,6 +28,26 @@ Two practical gains: there is no request timing or packet validation to get righ
 any more, and tuning on the laptop and watching the display can happen at the same
 time.
 
+## What you need
+
+Everything from the Speeduino build carries over. **One part has to be bought:**
+
+| Part | Status |
+| --- | --- |
+| **MCP2515 CAN module** with a TJA1050 transceiver | **New — buy this.** A few euros. An Arduino Mega has no CAN controller of its own. |
+| Arduino Mega 2560 helper board | already have |
+| 20x4 character LCD with I2C backpack | already have |
+| Fuel pressure sensor | already have — it moves here from the Speeduino, see below |
+| 120 Ω resistor | only if the CAN module has none fitted |
+
+**Check the crystal before you order.** These modules ship with either an 8 MHz
+or a 16 MHz crystal, printed on the metal can or the silkscreen, and the choice
+has to match `CAN_CRYSTAL` in [`src/main.cpp`](src/main.cpp). Get it wrong and the
+module still initialises without a word of complaint — it simply listens at the
+wrong bit rate and nothing ever arrives. This is the single most common reason one
+of these boards appears dead. A 16 MHz board matches the default in the firmware;
+either works as long as the setting agrees with the hardware.
+
 ## Wiring
 
 Full detail, including what to remove and how to calibrate the fuel pressure
@@ -90,12 +110,14 @@ which described a straight 0-5 V line and was probably wrong for that sensor.
 **Removed:** the serial link on Mega pins 18 and 19, and the 10k resistors in
 those wires. That went to the Speeduino.
 
-### Check the crystal
+### Before powering up
 
-MCP2515 modules ship with either an 8 MHz or a 16 MHz crystal. It must match
-`CAN_CRYSTAL` in `src/main.cpp`. Get it wrong and the module still initialises
-without complaint — it simply listens at the wrong bit rate and nothing ever
-arrives. This is the most common reason one of these boards appears dead.
+Note the crystal frequency on the module and set `CAN_CRYSTAL` in
+[`src/main.cpp`](src/main.cpp) to match — see [What you need](#what-you-need).
+
+With the power off, measure between CAN-H and CAN-L. About **60 Ω** is right: two
+120 Ω terminating resistors in parallel, one at each end of the bus. 120 Ω means
+only one is fitted, and an open circuit means neither.
 
 ## Setting up the ECU
 
