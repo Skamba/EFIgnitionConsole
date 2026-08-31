@@ -48,11 +48,15 @@
 // Mega's hardware SPI: SI = 51, SO = 50, SCK = 52.
 constexpr byte CAN_CS_PIN = 53;
 
-// Crystal fitted on the MCP2515 module. Boards ship with either, the silkscreen
-// or the metal can tells you which. Getting this wrong is the single most common
-// reason no frames arrive: the controller still initialises, it just listens at
-// the wrong bit rate. Use MCP_8MHZ if your module has an 8 MHz crystal.
-constexpr byte CAN_CRYSTAL = MCP_16MHZ;
+// Crystal fitted on the MCP2515 module. Getting this wrong is the single most
+// common reason no frames arrive: the controller still initialises, it just
+// listens at the wrong bit rate, and nothing on the display says why.
+//
+// Set to 8 MHz because that is what the common blue MCP2515 + TJA1050 board
+// carries, which is the one this project uses. Do not take that on trust: read
+// the number off the silver can on the board itself. Some batches ship 16 MHz,
+// and then this has to be MCP_16MHZ.
+constexpr byte CAN_CRYSTAL = MCP_8MHZ;
 
 // Fuel pressure is measured by this board, not by the ECU. The EFIgnition 46 has
 // three analogue inputs and all three are taken (lambda, MAP, throttle), so the

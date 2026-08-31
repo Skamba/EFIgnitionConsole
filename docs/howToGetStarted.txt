@@ -22,9 +22,17 @@ What you need
 The MCP2515 module is the only new part compared to the Speeduino setup.
 
 Watch the crystal on the CAN module. They ship with either an 8 MHz or a 16 MHz
-crystal, printed on the metal can or on the silkscreen. It must match CAN_CRYSTAL
-in src/main.cpp. Get this wrong and the module still starts up quite happily, it
-just listens at the wrong bit rate and nothing ever arrives.
+crystal, stamped on the silver can. It must match CAN_CRYSTAL in src/main.cpp. Get
+this wrong and the module still starts up quite happily, it just listens at the
+wrong bit rate and nothing ever arrives. No shop listing mentions this.
+
+The firmware is set to 8 MHz, which is what the common blue MCP2515 + TJA1050
+board carries. Read the number off your own board rather than trusting that: some
+batches ship 16 MHz.
+
+Those boards also carry a 120 ohm terminating resistor, usually on a jumper marked
+J1. That is one of the two the bus needs; leave it fitted unless the display sits
+in the middle of the bus rather than at one end.
 
 
 Wiring

@@ -40,13 +40,20 @@ Everything from the Speeduino build carries over. **One part has to be bought:**
 | Fuel pressure sensor | already have — it moves here from the Speeduino, see below |
 | 120 Ω resistor | only if the CAN module has none fitted |
 
-**Check the crystal before you order.** These modules ship with either an 8 MHz
-or a 16 MHz crystal, printed on the metal can or the silkscreen, and the choice
-has to match `CAN_CRYSTAL` in [`src/main.cpp`](src/main.cpp). Get it wrong and the
-module still initialises without a word of complaint — it simply listens at the
-wrong bit rate and nothing ever arrives. This is the single most common reason one
-of these boards appears dead. A 16 MHz board matches the default in the firmware;
-either works as long as the setting agrees with the hardware.
+**Read the crystal off the board.** These modules ship with either an 8 MHz or a
+16 MHz crystal, stamped on the silver can, and the choice has to match
+`CAN_CRYSTAL` in [`src/main.cpp`](src/main.cpp). Get it wrong and the module still
+initialises without a word of complaint — it simply listens at the wrong bit rate
+and nothing ever arrives. This is the single most common reason one of these
+boards appears dead, and no shop listing mentions it.
+
+The firmware is set to **8 MHz**, because that is what the common blue
+MCP2515 + TJA1050 board carries. Check yours anyway: some batches ship 16 MHz, and
+then the constant has to change.
+
+Those boards also have a 120 Ω terminating resistor fitted, usually on a jumper
+(J1). That is one of the two the bus needs — see [Before powering
+up](#before-powering-up).
 
 ## Wiring
 
