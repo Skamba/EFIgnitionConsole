@@ -166,6 +166,11 @@ read them.
 arriving**, not that the value is zero. Values are blanked per message rather
 than left frozen, so a stale reading can never be mistaken for a live one.
 
+**An AFR shown as `>25` means the one-byte broadcast value wrapped**: the
+sensor is reading leaner than AFR 25.5 (free air, typically), not rich. The
+true value cannot be recovered from a single byte, so the display only says it
+is beyond range.
+
 The character in the bottom right is blank while all four CAN messages keep
 arriving; a digit is the number that have gone quiet, and an **E** means the CAN
 controller is reporting a bus fault — error-passive or bus-off.

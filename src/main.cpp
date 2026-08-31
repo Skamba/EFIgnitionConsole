@@ -89,6 +89,13 @@ constexpr int FUEL_PRESSURE_CBAR_AT_5V = 466;
 constexpr byte SQUIRTS_PER_CYCLE = 1;
 constexpr byte ALTERNATE_DIVIDER = 1;
 
+// The broadcast carries AFR in one byte (tenths, so 25.5 at most) and wraps
+// beyond that: a sensor in free air reads about AFR 30 and arrives as 4.4,
+// which would show as a terrifyingly rich mixture while the sensor is in fact
+// reading extremely lean. A running engine sits between roughly 10 and 20, so
+// anything below this floor is a wrapped over-range reading, shown as ">25".
+constexpr byte AFR_WRAP_FLOOR_TENTHS = 70;
+
 // ---------------------------------------------------------------------------
 // The dash broadcast
 // ---------------------------------------------------------------------------
@@ -291,10 +298,9 @@ void readCanMessages() {
         break;
 
       case CAN_ID_MIXTURE:
-        // Both are single bytes holding AFR times ten, so they cannot express
-        // more than 25.5. A sensor in free air reads past that and wraps round;
-        // there is no way to tell from the value alone, so treat a suspiciously
-        // low reading with the same care as a suspiciously high one.
+        // Both are single bytes holding AFR times ten; anything past 25.5
+        // wraps. The display treats impossibly low values as wrapped readings
+        // (see AFR_WRAP_FLOOR_TENTHS); the raw bytes are stored unchanged.
         engineData.afrTargetTenths = data[0];
         engineData.afrTenths = data[1];
         markSeen(MSG_MIXTURE);
@@ -421,8 +427,16 @@ void updateDisplay() {
   // 0xDF is the degree sign in the HD44780 character set
   lcdfield(15, 1, fuelFresh, divRound(engineData.advanceTenths, 10), "%4d\xDF", " ---\xDF");
 
-  // Row 2 -- mixture against its target, and the board voltage the ECU sees
-  lcdfieldTenths(0, 2, mixFresh, engineData.afrTenths, "afr", "--.-afr");
+  // Row 2 -- mixture against its target, and the board voltage the ECU sees.
+  // An impossibly low AFR is a wrapped over-range byte (free air), not a rich
+  // mixture; showing "4.4afr" there would send someone hunting a fuelling
+  // fault that does not exist.
+  if (mixFresh && engineData.afrTenths < AFR_WRAP_FLOOR_TENTHS) {
+    lcdprint(0, 2, " >25afr");
+  }
+  else {
+    lcdfieldTenths(0, 2, mixFresh, engineData.afrTenths, "afr", "--.-afr");
+  }
   lcd.setCursor(8, 2);
   if (mixFresh) {
     static char buf[8];
