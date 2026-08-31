@@ -209,6 +209,13 @@ unsigned long lastSeen[NUM_CAN_MESSAGES];
 bool everSeen[NUM_CAN_MESSAGES];
 bool canStarted = false;
 
+// Counters that make the difference between "the bus is dead" and "the bus is
+// fine but nobody is saying what we expect". Without them every failure looks
+// identical from the driver's seat.
+unsigned long framesTotal = 0;   // any frame at all, ours or not
+unsigned long framesOurs = 0;    // frames with one of our four identifiers
+unsigned long lastOtherId = 0;   // the most recent identifier that was not ours
+
 static bool fresh(byte index, unsigned long now) {
   return everSeen[index] && ((now - lastSeen[index]) < DATA_TIMEOUT);
 }
@@ -247,10 +254,19 @@ void readCanMessages() {
     if (can.readMsgBuf(&id, &ext, &length, data) != CAN_OK) {
       return;
     }
+    framesTotal++;
+
     // The dash broadcast uses 11-bit identifiers. Ignoring extended frames stops
     // a 29-bit identifier from colliding with ours by coincidence.
     if (ext || length < 8) {
       continue;
+    }
+
+    if (id >= CAN_BASE_ID && id <= CAN_ID_ELECTRIC) {
+      framesOurs++;
+    }
+    else {
+      lastOtherId = id;
     }
 
     switch (id) {
@@ -481,19 +497,93 @@ void setup() {
     // node to acknowledge its frames, and here that is us.
     can.setMode(MCP_NORMAL);
   }
-  else {
-    showMessage("CAN start mislukt",
-                "Controleer bedrading",
-                "en het kristal op de",
-                "module (8 of 16MHz)");
+  // If it did not start, the main loop puts the diagnostic screen up. Doing it
+  // there keeps every failure message in one place.
+}
+
+// Which screen the current situation calls for. Each one names a different
+// thing to go and check, which is the whole point of separating them.
+enum Screen : byte {
+  SCREEN_VALUES,     // at least one message is current
+  SCREEN_NO_CHIP,    // the MCP2515 did not answer over SPI
+  SCREEN_QUIET,      // nothing on the wire at all
+  SCREEN_NOISE,      // electrical activity that will not decode
+  SCREEN_OTHER_IDS,  // the bus works, but nobody is sending our identifiers
+};
+
+Screen chooseScreen(unsigned long now) {
+  if (!canStarted) {
+    return SCREEN_NO_CHIP;
+  }
+  if (staleMessageCount(now) < NUM_CAN_MESSAGES) {
+    return SCREEN_VALUES;
+  }
+
+  // Traffic that is not ours proves the wiring, the bit rate and the crystal are
+  // all right, which narrows the problem down to one setting: the base
+  // identifier in the tune, or Dash Broadcasting being switched off.
+  if (framesOurs == 0 && framesTotal > 0) {
+    return SCREEN_OTHER_IDS;
+  }
+
+  // Receive errors mean the controller is seeing edges it cannot turn into
+  // frames. That is a different fault from a wire with nothing on it: it points
+  // at the bit rate (so the crystal setting), at swapped CAN-H and CAN-L, or at
+  // termination, rather than at a silent ECU.
+  bool busFault = (can.getError() & CAN_BUS_FAULT_MASK) != 0;
+  return (can.errorCountRX() > 0 || busFault) ? SCREEN_NOISE : SCREEN_QUIET;
+}
+
+void showDiagnosticScreen(Screen screen) {
+  static char idLine[21];
+
+  switch (screen) {
+    case SCREEN_NO_CHIP:
+      showMessage("CAN chip not found",
+                  "Check SPI wiring,",
+                  "CS on pin 53, and",
+                  "power to the module");
+      break;
+
+    case SCREEN_QUIET:
+      showMessage("No CAN data received",
+                  "Bus is quiet. Is",
+                  "Dash Broadcasting",
+                  "on? Is CAN-H/L on?");
+      break;
+
+    case SCREEN_NOISE:
+      showMessage("No CAN data received",
+                  "Signal but no decode",
+                  "Crystal 8 or 16MHz?",
+                  "H/L swapped? 60ohm?");
+      break;
+
+    case SCREEN_OTHER_IDS:
+      // 11-bit identifiers stop at 2047, so this is 20 characters at its longest.
+      snprintf(idLine, sizeof(idLine), "Saw id %lu not ours", lastOtherId);
+      showMessage("CAN bus is alive",
+                  idLine,
+                  "Expect 1512 to 1515",
+                  "Check Base CAN id");
+      break;
+
+    default:
+      break;
   }
 }
 
 void loop() {
   static unsigned long lastDisplay = 0;
-  static byte lastScreen = 0;  // 0 = values, 1 = waiting, 2 = bus fault
+  static Screen lastScreen = SCREEN_VALUES;
+  static bool everDrawn = false;
 
   if (!canStarted) {
+    // Nothing to read, but the screen still has to be put up once.
+    if (!everDrawn) {
+      showDiagnosticScreen(SCREEN_NO_CHIP);
+      everDrawn = true;
+    }
     delay(1000);
     return;
   }
@@ -506,38 +596,19 @@ void loop() {
   }
   lastDisplay = now;
 
-  bool busFault = (can.getError() & CAN_BUS_FAULT_MASK) != 0;
-  bool nothingAtAll = staleMessageCount(now) == NUM_CAN_MESSAGES;
+  Screen screen = chooseScreen(now);
 
-  // A bus fault with no data at all is worth its own screen: it separates "the
-  // ECU is not sending" from "the wiring will not carry it", which need
-  // completely different things checked.
-  if (busFault && nothingAtAll) {
-    if (lastScreen != 2) {
-      showMessage("CAN-fout op de bus",
-                  "Controleer CAN-H/L,",
-                  "massa en de twee",
-                  "afsluitweerstanden");
-      lastScreen = 2;
-    }
-    return;
-  }
-
-  if (nothingAtAll) {
-    if (lastScreen != 1) {
-      showMessage("Geen data van de",
-                  "ECU. Staat Dash",
-                  "Broadcasting aan?",
-                  "Zie werkboek blad 9");
-      lastScreen = 1;
-    }
-    return;
-  }
-
-  if (lastScreen != 0) {
+  if (screen != lastScreen || !everDrawn) {
     lcd.clear();
-    lastScreen = 0;
+    lastScreen = screen;
+    everDrawn = true;
+    if (screen != SCREEN_VALUES) {
+      showDiagnosticScreen(screen);
+      return;
+    }
   }
 
-  updateDisplay();
+  if (screen == SCREEN_VALUES) {
+    updateDisplay();
+  }
 }

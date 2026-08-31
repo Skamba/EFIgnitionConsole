@@ -136,12 +136,39 @@ never be mistaken for a live one.
 
 The character in the bottom right corner is blank while all four CAN messages keep
 arriving. A digit there is the number of messages that have gone quiet. An E means
-the CAN controller itself reports a bus fault - error passive or bus off - which
-points at wiring, grounding or termination rather than at a setting in the tune.
+the CAN controller itself reports a bus fault - error passive or bus off.
 
-If nothing arrives at all the screen says so and tells you to check Dash
-Broadcasting. If nothing arrives and the controller also reports a fault, it says
-that instead, because those two need different things checked.
+
+When nothing arrives
+--------------------
+
+The display works out which kind of nothing it is looking at, and says so. Each
+screen points at something different to check.
+
+  "CAN chip not found"
+      The MCP2515 never answered over SPI, so the problem sits between the Mega
+      and the module. Check the SPI wiring, chip select on pin 53, and power.
+
+  "No CAN data received" / "Bus is quiet"
+      The controller works, but there is nothing at all on the wire - not even
+      something it fails to decode. Check that Dash Broadcasting is switched on
+      in the tune, and that CAN-H and CAN-L are actually connected.
+
+  "No CAN data received" / "Signal but no decode"
+      Electrical activity is arriving that will not turn into valid frames; the
+      receive error counter is climbing. In order of likelihood: the crystal
+      setting (8 versus 16 MHz), CAN-H and CAN-L swapped, and termination. A
+      healthy bus measures about 60 ohm across the pair with the power off, which
+      is two 120 ohm resistors in parallel. 120 ohm means only one is fitted.
+
+  "CAN bus is alive" / "Saw id 1234 not ours"
+      Frames are arriving and decoding cleanly, which proves the wiring, the bit
+      rate and the crystal are all right. Nobody is sending our identifiers. The
+      screen shows the identifier it did see, so you can compare it with the
+      1512 to 1515 this firmware expects and correct the Base CAN identifier.
+
+That last screen is the most useful of the four: it turns "it does not work" into
+a number you can read off the display and type into TunerStudio.
 
 Two values from the Speeduino version are not part of the CAN dash broadcast and
 have gone: the idle valve position and the engine status letters (R, C, A, W).

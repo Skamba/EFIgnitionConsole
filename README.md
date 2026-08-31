@@ -133,12 +133,27 @@ than left frozen, so a stale reading can never be mistaken for a live one.
 
 The character in the bottom right is blank while all four CAN messages keep
 arriving; a digit is the number that have gone quiet, and an **E** means the CAN
-controller is reporting a bus fault — error-passive or bus-off, which points at
-wiring, grounding or termination rather than at anything in the tune.
+controller is reporting a bus fault — error-passive or bus-off.
 
-If nothing arrives at all the screen says so and points at the Dash Broadcasting
-setting; if nothing arrives *and* the controller reports a fault, it says that
-instead, because those two need completely different things checked.
+## When nothing arrives
+
+Rather than one "no data" message, the display works out *which* kind of nothing
+it is looking at and names it. Each screen points at a different thing to check,
+which is the whole reason for separating them.
+
+| Screen | What it means | What to check |
+| --- | --- | --- |
+| `CAN chip not found` | The MCP2515 never answered over SPI, so the fault is between the Mega and the module. | SPI wiring, chip select on pin 53, power to the module. |
+| `No CAN data received` / `Bus is quiet` | The controller works but there is nothing at all on the wire — not even something it fails to decode. | Is Dash Broadcasting switched on in the tune? Are CAN-H and CAN-L actually connected? |
+| `No CAN data received` / `Signal but no decode` | Electrical activity is arriving that will not turn into valid frames. The receive error counter is climbing. | Crystal setting (8 vs 16 MHz) — by far the most common cause. CAN-H and CAN-L swapped. Termination: a healthy bus measures about 60 Ω across the pair with the power off. |
+| `CAN bus is alive` / `Saw id 1234 not ours` | Frames are arriving and decoding cleanly, so wiring, bit rate and crystal are all proven good. Nobody is sending *our* identifiers. | The Base CAN identifier in the tune. The screen shows the identifier it actually saw, so you can compare it against the 1512-1515 this firmware expects. |
+
+That last one is the most useful of the four: it turns "it does not work" into a
+number you can read off the screen and type into TunerStudio.
+
+The distinction between the two middle screens comes from the MCP2515's receive
+error counter. A silent wire and a wire carrying something unintelligible look
+identical from the outside, but they are completely different faults.
 
 **Injector duty is calculated here**, not sent by the ECU. It assumes one injector
 opening per engine cycle, which is what sequential injection gives — adjust
