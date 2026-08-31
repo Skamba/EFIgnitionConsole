@@ -55,14 +55,20 @@ sensor, is in [`docs/howToGetStarted.txt`](docs/howToGetStarted.txt). In short:
 
 **CAN module (MCP2515) to the Mega — SPI**
 
-| Module | Mega |
-| --- | --- |
-| CS | pin 53 |
-| SI | pin 51 |
-| SO | pin 50 |
-| SCK | pin 52 |
-| VCC / GND | 5V / GND |
-| INT | not connected |
+| Module | Also printed as | Mega |
+| --- | --- | --- |
+| CS | NSS, SS | pin 53 |
+| SI | MOSI, SDI | pin 51 |
+| SO | MISO, SDO | pin 50 |
+| SCK | CLK | pin 52 |
+| VCC | 5V | 5V |
+| GND | | GND |
+| INT | | not connected |
+
+The silkscreen wording varies between makers, hence the middle column. **SI and
+SO are the pair that gets crossed**: SI is the module's input, so it comes from
+the Mega's output on 51. Swap those two and the module never answers, which shows
+up as `CAN chip not found`.
 
 Pins 50-52 are the Mega's hardware SPI and cannot be moved. Only the chip select
 is free (`CAN_CS_PIN`).

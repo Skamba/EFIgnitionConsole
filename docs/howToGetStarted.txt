@@ -42,13 +42,18 @@ Wiring
 
 2. CAN module to the Mega (SPI)
 
-   MCP2515 CS    ->  Mega pin 53
-   MCP2515 SI    ->  Mega pin 51
-   MCP2515 SO    ->  Mega pin 50
-   MCP2515 SCK   ->  Mega pin 52
+   MCP2515 CS    ->  Mega pin 53      also printed as NSS or SS
+   MCP2515 SI    ->  Mega pin 51      also printed as MOSI or SDI
+   MCP2515 SO    ->  Mega pin 50      also printed as MISO or SDO
+   MCP2515 SCK   ->  Mega pin 52      also printed as CLK
    MCP2515 VCC   ->  Mega 5V
    MCP2515 GND   ->  Mega GND
    MCP2515 INT   ->  not connected
+
+   The silkscreen wording varies between makers, hence the notes on the right.
+   SI and SO are the pair that gets crossed: SI is the module's input, so it comes
+   from the Mega's output on pin 51. Swap those two and the module never answers,
+   which the display reports as "CAN chip not found".
 
    Pins 50 to 52 are the Mega's hardware SPI and cannot be moved. Only the chip
    select is free; it is CAN_CS_PIN in src/main.cpp. The interrupt line is left
