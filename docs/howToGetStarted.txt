@@ -115,20 +115,33 @@ for linking several MegaSquirt units together and can stay off.
 What is on the screen
 ---------------------
 
-    4200rpm  28°  92C  31C
-     100kPa  85%    3.40ms
-    12.8afr (12.5)   14.1V
-     3.0bar  77%duty
+    4200rpm   210C   31C
+     105kPa    85%   28°
+    12.8afr (12.5) 14.1V
+     3.0bar  3.40ms  77%
 
-    row 1  engine speed, ignition advance, cylinder head, inlet air
-    row 2  manifold pressure, throttle, injector pulse width
+    row 1  engine speed, cylinder head, inlet air
+    row 2  manifold pressure, throttle, ignition advance
     row 3  measured AFR, target AFR in brackets, board voltage
-    row 4  fuel pressure, injector duty cycle
+    row 4  fuel pressure, injector pulse width, injector duty
+
+Every field has room for three digits, because a cylinder head on this engine
+runs around 150 C and peaks past 200. A tighter layout would run the two
+temperatures together exactly when the engine is hot enough that you want to
+read them.
+
+Dashes in a field mean the CAN message carrying that value has stopped arriving.
+Values are blanked per message rather than left frozen, so a stale reading can
+never be mistaken for a live one.
 
 The character in the bottom right corner is blank while all four CAN messages keep
-arriving. A digit there is the number of messages that have gone quiet, which is
-usually a wiring or termination problem. If nothing arrives at all, the screen says
-so and tells you to check Dash Broadcasting.
+arriving. A digit there is the number of messages that have gone quiet. An E means
+the CAN controller itself reports a bus fault - error passive or bus off - which
+points at wiring, grounding or termination rather than at a setting in the tune.
+
+If nothing arrives at all the screen says so and tells you to check Dash
+Broadcasting. If nothing arrives and the controller also reports a fault, it says
+that instead, because those two need different things checked.
 
 Two values from the Speeduino version are not part of the CAN dash broadcast and
 have gone: the idle valve position and the engine status letters (R, C, A, W).

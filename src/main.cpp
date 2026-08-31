@@ -16,6 +16,7 @@
 // 20260412 | improved serial buffer cleanup before and after packet reads
 // 20260412 | switched advance display to inline LCD degree escape and hid status 0
 // 20260901 | rewritten for the EFIgnition 46: CAN instead of Speeduino serial
+// 20260901 | per-message staleness, bus error reporting, fixed 16-bit decoding
 //
 // Why this changed
 // ----------------
@@ -97,29 +98,44 @@ constexpr unsigned long CAN_ID_FUELLING = CAN_BASE_ID + 1;  // pw1, pw2, mat, ad
 constexpr unsigned long CAN_ID_MIXTURE  = CAN_BASE_ID + 2;  // afr target, afr, ego corr
 constexpr unsigned long CAN_ID_ELECTRIC = CAN_BASE_ID + 3;  // battery, spare adc, knock
 
+// Index into lastSeen[] per message, so a value can be blanked when the message
+// that carries it stops arriving.
+constexpr byte MSG_ENGINE   = 0;
+constexpr byte MSG_FUELLING = 1;
+constexpr byte MSG_MIXTURE  = 2;
+constexpr byte MSG_ELECTRIC = 3;
 constexpr byte NUM_CAN_MESSAGES = 4;
 
 // The ECU is a 16-bit Motorola part, so every 16-bit value travels most
 // significant byte first. An AVR is the other way round, hence the explicit
-// assembly below rather than a memcpy.
-static int readSigned16(const byte *data, byte offset) {
-  return (int)(((unsigned int)data[offset] << 8) | data[offset + 1]);
+// assembly below. The int16_t cast is what makes negative values (retard, sub
+// zero temperatures) come out right, and it keeps working on a board where int
+// is 32 bits instead of 16.
+static int16_t readSigned16(const byte *data, byte offset) {
+  return (int16_t)(((uint16_t)data[offset] << 8) | data[offset + 1]);
 }
 
-static unsigned int readUnsigned16(const byte *data, byte offset) {
-  return ((unsigned int)data[offset] << 8) | data[offset + 1];
+static uint16_t readUnsigned16(const byte *data, byte offset) {
+  return ((uint16_t)data[offset] << 8) | data[offset + 1];
+}
+
+// Integer division that rounds to nearest and keeps working for negatives,
+// where plain / truncates towards zero (-25/10 gives -2, not -3).
+static int divRound(int value, int divisor) {
+  return (value >= 0) ? (value + divisor / 2) / divisor
+                      : (value - divisor / 2) / divisor;
 }
 
 // The firmware always sends temperatures in tenths of a degree Fahrenheit. The
 // Celsius setting in TunerStudio only affects what TunerStudio itself draws, so
 // the conversion has to happen here.
 static int fahrenheitTenthsToCelsius(int tenthsF) {
-  return ((long)tenthsF - 320L) * 5L / 90L;
+  return (int)(((long)tenthsF - 320L) * 5L / 90L);
 }
 
 // Pulse width arrives in timer ticks of 0.666 us, not in microseconds. Returned
 // in hundredths of a millisecond so it can be printed without floating point.
-static unsigned int pulseWidthTicksToHundredthMs(unsigned int ticks) {
+static unsigned int pulseWidthTicksToHundredthMs(uint16_t ticks) {
   return (unsigned int)(((unsigned long)ticks * 666UL) / 10000UL);
 }
 
@@ -132,7 +148,7 @@ static unsigned int pulseWidthTicksToHundredthMs(unsigned int ticks) {
 // Folding the constants together gives ticks * rpm / 1801802 for one opening per
 // cycle, which stays inside a 32-bit integer for any pulse width this engine can
 // produce.
-static byte injectorDutyPercent(unsigned int pulseWidthTicks, unsigned int rpm) {
+static byte injectorDutyPercent(uint16_t pulseWidthTicks, uint16_t rpm) {
   if (rpm == 0) {
     return 0;
   }
@@ -160,57 +176,81 @@ constexpr unsigned long DATA_TIMEOUT = 1000UL;
 // values shown are always the most recent ones.
 constexpr unsigned long DISPLAY_INTERVAL = 250UL;
 
-struct EngineData {
-  int mapKpaTenths;
-  unsigned int rpm;
-  int coolantTenthsF;
-  int throttleTenths;
+// Upper bound on frames handled in one pass. Without it a busy or misbehaving
+// bus could keep the reader spinning and the display would freeze.
+constexpr byte MAX_FRAMES_PER_PASS = 32;
 
-  unsigned int pulseWidthTicks;
-  int inletTenthsF;
-  int advanceTenths;
+// Bits in the MCP2515 error register that mean a real bus problem: receive and
+// transmit error passive, and bus-off. The two overflow bits are deliberately
+// left out. Overflow happens whenever a frame arrives while the LCD is being
+// redrawn, which is normal here and harms nothing, and this library offers no
+// way to clear those bits -- treating them as faults would light a permanent
+// warning for a bus that is working fine.
+constexpr byte CAN_BUS_FAULT_MASK = MCP_EFLG_RXEP | MCP_EFLG_TXEP | MCP_EFLG_TXBO;
+
+struct EngineData {
+  int16_t mapKpaTenths;
+  uint16_t rpm;
+  int16_t coolantTenthsF;
+  int16_t throttleTenths;
+
+  uint16_t pulseWidthTicks;
+  int16_t inletTenthsF;
+  int16_t advanceTenths;
 
   byte afrTargetTenths;
   byte afrTenths;
 
-  int batteryTenths;
+  int16_t batteryTenths;
 };
 
 EngineData engineData;
 unsigned long lastSeen[NUM_CAN_MESSAGES];
+bool everSeen[NUM_CAN_MESSAGES];
 bool canStarted = false;
 
-static bool messageFresh(byte index, unsigned long now) {
-  return (lastSeen[index] != 0) && ((now - lastSeen[index]) < DATA_TIMEOUT);
+static bool fresh(byte index, unsigned long now) {
+  return everSeen[index] && ((now - lastSeen[index]) < DATA_TIMEOUT);
 }
 
 static byte staleMessageCount(unsigned long now) {
   byte stale = 0;
   for (byte i = 0; i < NUM_CAN_MESSAGES; i++) {
-    if (!messageFresh(i, now)) {
+    if (!fresh(i, now)) {
       stale++;
     }
   }
   return stale;
 }
 
+static void markSeen(byte index) {
+  lastSeen[index] = millis();
+  everSeen[index] = true;
+}
+
 // ---------------------------------------------------------------------------
 // Reading
 // ---------------------------------------------------------------------------
 
-// Empties the receive buffer and files whatever was in it. Called far more often
-// than the display is redrawn so the MCP2515 never overflows.
+// Empties the receive buffer and files whatever was in it. Called on every pass
+// through the main loop, far more often than the display is redrawn.
 void readCanMessages() {
   unsigned long id = 0;
+  byte ext = 0;
   byte length = 0;
   byte data[8];
 
-  while (can.checkReceive() == CAN_MSGAVAIL) {
-    if (can.readMsgBuf(&id, &length, data) != CAN_OK) {
+  for (byte frame = 0; frame < MAX_FRAMES_PER_PASS; frame++) {
+    if (can.checkReceive() != CAN_MSGAVAIL) {
       return;
     }
-    if (length < 8) {
-      continue;  // every dash broadcast message is a full eight bytes
+    if (can.readMsgBuf(&id, &ext, &length, data) != CAN_OK) {
+      return;
+    }
+    // The dash broadcast uses 11-bit identifiers. Ignoring extended frames stops
+    // a 29-bit identifier from colliding with ours by coincidence.
+    if (ext || length < 8) {
+      continue;
     }
 
     switch (id) {
@@ -219,7 +259,7 @@ void readCanMessages() {
         engineData.rpm = readUnsigned16(data, 2);
         engineData.coolantTenthsF = readSigned16(data, 4);
         engineData.throttleTenths = readSigned16(data, 6);
-        lastSeen[0] = millis();
+        markSeen(MSG_ENGINE);
         break;
 
       case CAN_ID_FUELLING:
@@ -227,21 +267,23 @@ void readCanMessages() {
         // bytes 2-3 hold the second injector, which mirrors the first here
         engineData.inletTenthsF = readSigned16(data, 4);
         engineData.advanceTenths = readSigned16(data, 6);
-        lastSeen[1] = millis();
+        markSeen(MSG_FUELLING);
         break;
 
       case CAN_ID_MIXTURE:
-        // Both are single bytes holding AFR times ten, so they run out at 25.5.
-        // A sensor in free air reads past that; clamping keeps the display sane.
+        // Both are single bytes holding AFR times ten, so they cannot express
+        // more than 25.5. A sensor in free air reads past that and wraps round;
+        // there is no way to tell from the value alone, so treat a suspiciously
+        // low reading with the same care as a suspiciously high one.
         engineData.afrTargetTenths = data[0];
         engineData.afrTenths = data[1];
-        lastSeen[2] = millis();
+        markSeen(MSG_MIXTURE);
         break;
 
       case CAN_ID_ELECTRIC:
         engineData.batteryTenths = readSigned16(data, 0);
         // bytes 2-5 are the ECU's spare analogue inputs, unused on this car
-        lastSeen[3] = millis();
+        markSeen(MSG_ELECTRIC);
         break;
 
       default:
@@ -264,6 +306,13 @@ int readFuelPressureTenths() {
   long span = FUEL_PRESSURE_CBAR_AT_5V - FUEL_PRESSURE_CBAR_AT_0V;
   long centibar = FUEL_PRESSURE_CBAR_AT_0V + (span * counts) / 1023L;
 
+  // The calibration runs below zero on purpose, because the sensor's own range
+  // starts at 0.5 V. An unconnected or shorted input therefore lands on a
+  // negative pressure, which means nothing; showing it as zero is honest and
+  // avoids a minus sign the tenths printer cannot render.
+  if (centibar < 0) {
+    centibar = 0;
+  }
   return (int)(centibar / 10);
 }
 
@@ -283,75 +332,120 @@ void lcdprint(byte col, byte row, const char *text) {
   lcd.print(text);
 }
 
-void lcdprintTenths(byte col, byte row, int value10, const char *suffix, byte wholeWidth = 2) {
-  static char numBuf[21];
-  lcd.setCursor(col, row);
-  if (wholeWidth <= 1) {
-    snprintf(numBuf, sizeof(numBuf), "%d.%1d%s", value10 / 10, abs(value10) % 10, suffix);
+// Prints a number, or a placeholder of exactly the same width when the message
+// carrying it has gone quiet. Showing a frozen value as if it were live is the
+// one thing a gauge must never do.
+void lcdfield(byte col, byte row, bool isFresh, int value, const char *fmt, const char *blank) {
+  if (isFresh) {
+    lcdprint(col, row, value, fmt);
   }
   else {
-    snprintf(numBuf, sizeof(numBuf), "%2d.%1d%s", value10 / 10, abs(value10) % 10, suffix);
+    lcdprint(col, row, blank);
   }
-  lcd.print(numBuf);
 }
 
-void lcdprintHundredths(byte col, byte row, unsigned int value100, const char *suffix) {
+void lcdfieldTenths(byte col, byte row, bool isFresh, int value10, const char *suffix,
+                    const char *blank) {
   static char numBuf[21];
   lcd.setCursor(col, row);
-  snprintf(numBuf, sizeof(numBuf), "%2u.%02u%s", value100 / 100, value100 % 100, suffix);
-  lcd.print(numBuf);
+  if (isFresh) {
+    snprintf(numBuf, sizeof(numBuf), "%2d.%1d%s", value10 / 10, abs(value10) % 10, suffix);
+    lcd.print(numBuf);
+  }
+  else {
+    lcd.print(blank);
+  }
 }
 
-void showWaitingForData() {
+void lcdfieldHundredths(byte col, byte row, bool isFresh, unsigned int value100,
+                        const char *suffix, const char *blank) {
+  static char numBuf[21];
+  lcd.setCursor(col, row);
+  if (isFresh) {
+    snprintf(numBuf, sizeof(numBuf), "%2u.%02u%s", value100 / 100, value100 % 100, suffix);
+    lcd.print(numBuf);
+  }
+  else {
+    lcd.print(blank);
+  }
+}
+
+void showMessage(const char *l0, const char *l1, const char *l2, const char *l3) {
   lcd.clear();
-  lcdprint(0, 0, "Geen data van de");
-  lcdprint(0, 1, "ECU. Staat Dash");
-  lcdprint(0, 2, "Broadcasting aan?");
-  lcdprint(0, 3, "Zie werkboek blad 9");
+  lcdprint(0, 0, l0);
+  lcdprint(0, 1, l1);
+  lcdprint(0, 2, l2);
+  lcdprint(0, 3, l3);
 }
 
 void updateDisplay() {
   unsigned long now = millis();
+  bool engineFresh = fresh(MSG_ENGINE, now);
+  bool fuelFresh = fresh(MSG_FUELLING, now);
+  bool mixFresh = fresh(MSG_MIXTURE, now);
+  bool elecFresh = fresh(MSG_ELECTRIC, now);
 
-  // Row 0 -- what the engine is doing
-  lcdprint(0, 0, (int)engineData.rpm, "%4drpm ");
-  lcdprint(8, 0, engineData.advanceTenths / 10, "%3d\xDF ");  // 0xDF is the HD44780 degree sign
-  lcdprint(12, 0, fahrenheitTenthsToCelsius(engineData.coolantTenthsF), "%3dC");
-  lcdprint(16, 0, fahrenheitTenthsToCelsius(engineData.inletTenthsF), "%3dC");
+  // Row 0 -- engine speed and the two temperatures.
+  //
+  // Every field gets room for three digits. That is not padding: a cylinder head
+  // on this engine sits at 150 and peaks past 200, so three digits is the normal
+  // case here, and a tighter layout runs the two temperatures into each other
+  // exactly when the engine is hot enough that you want to read them.
+  lcdfield(0, 0, engineFresh, (int)engineData.rpm, "%4drpm", " ---rpm");
+  lcdfield(9, 0, engineFresh, fahrenheitTenthsToCelsius(engineData.coolantTenthsF), "%4dC", " ---C");
+  lcdfield(15, 0, fuelFresh, fahrenheitTenthsToCelsius(engineData.inletTenthsF), "%4dC", " ---C");
 
-  // Row 1 -- load, throttle and how long the injector is open
-  lcdprint(0, 1, engineData.mapKpaTenths / 10, "%4dkPa ");
-  lcdprint(8, 1, engineData.throttleTenths / 10, "%3d%% ");
-  lcdprintHundredths(13, 1, pulseWidthTicksToHundredthMs(engineData.pulseWidthTicks), "ms");
+  // Row 1 -- load, throttle and ignition advance
+  lcdfield(0, 1, engineFresh, divRound(engineData.mapKpaTenths, 10), "%4dkPa", " ---kPa");
+  lcdfield(9, 1, engineFresh, divRound(engineData.throttleTenths, 10), "%4d%%", " ---%");
+  // 0xDF is the degree sign in the HD44780 character set
+  lcdfield(15, 1, fuelFresh, divRound(engineData.advanceTenths, 10), "%4d\xDF", " ---\xDF");
 
   // Row 2 -- mixture against its target, and the board voltage the ECU sees
-  lcdprintTenths(0, 2, engineData.afrTenths, "afr");
+  lcdfieldTenths(0, 2, mixFresh, engineData.afrTenths, "afr", "--.-afr");
   lcd.setCursor(8, 2);
-  {
+  if (mixFresh) {
     static char buf[8];
     snprintf(buf, sizeof(buf), "(%2d.%1d)", engineData.afrTargetTenths / 10,
              engineData.afrTargetTenths % 10);
     lcd.print(buf);
   }
-  lcdprintTenths(15, 2, engineData.batteryTenths, "V");
+  else {
+    lcd.print("(--.-)");
+  }
+  lcdfieldTenths(15, 2, elecFresh, engineData.batteryTenths, "V", "--.-V");
 
-  // Row 3 -- fuel pressure from our own sensor, and how hard the injector works
+  // Row 3 -- fuel pressure from our own sensor, how long the injector is open,
+  // and how hard it is working
   if (FUEL_PRESSURE_CONNECTED) {
-    lcdprintTenths(0, 3, readFuelPressureTenths(), "bar");
+    lcdfieldTenths(0, 3, true, readFuelPressureTenths(), "bar", "--.-bar");
   }
   else {
     lcdprint(0, 3, "       ");
   }
-  lcdprint(8, 3, injectorDutyPercent(engineData.pulseWidthTicks, engineData.rpm), "%3d%%duty");
+  lcdfieldHundredths(8, 3, fuelFresh, pulseWidthTicksToHundredthMs(engineData.pulseWidthTicks),
+                     "ms", "--.--ms");
+  // Duty needs both the pulse width and the engine speed, so it is only shown
+  // when the two messages carrying them are both current.
+  lcdfield(15, 3, engineFresh && fuelFresh,
+           injectorDutyPercent(engineData.pulseWidthTicks, engineData.rpm),
+           "%3d%%", " --%");
 
   // Bottom right corner: blank while all four messages keep arriving, otherwise
-  // how many of them have gone quiet.
-  byte stale = staleMessageCount(now);
-  if (stale == 0) {
-    lcdprint(19, 3, " ");
+  // how many of them have gone quiet. An E means the CAN controller itself is
+  // reporting a bus fault, which points at wiring or termination rather than at
+  // a setting in the tune.
+  if (can.getError() & CAN_BUS_FAULT_MASK) {
+    lcdprint(19, 3, "E");
   }
   else {
-    lcdprint(19, 3, stale, "%1d");
+    byte stale = staleMessageCount(now);
+    if (stale == 0) {
+      lcdprint(19, 3, " ");
+    }
+    else {
+      lcdprint(19, 3, stale, "%1d");
+    }
   }
 }
 
@@ -376,26 +470,28 @@ void setup() {
 
   memset(&engineData, 0, sizeof(engineData));
   memset(lastSeen, 0, sizeof(lastSeen));
+  memset(everSeen, 0, sizeof(everSeen));
 
   // 500 kbit/s and 11-bit identifiers: both fixed in the ECU's firmware and not
   // adjustable from TunerStudio.
   canStarted = (can.begin(MCP_ANY, CAN_500KBPS, CAN_CRYSTAL) == CAN_OK);
 
   if (canStarted) {
-    can.setMode(MCP_NORMAL);  // listen and acknowledge; the bus needs the ack
-    pinMode(CAN_CS_PIN, OUTPUT);
+    // Normal mode, not listen-only: a CAN transmitter needs at least one other
+    // node to acknowledge its frames, and here that is us.
+    can.setMode(MCP_NORMAL);
   }
   else {
-    lcdprint(0, 0, "CAN start mislukt");
-    lcdprint(0, 1, "Controleer bedrading");
-    lcdprint(0, 2, "en het kristal op de");
-    lcdprint(0, 3, "module (8 of 16MHz)");
+    showMessage("CAN start mislukt",
+                "Controleer bedrading",
+                "en het kristal op de",
+                "module (8 of 16MHz)");
   }
 }
 
 void loop() {
   static unsigned long lastDisplay = 0;
-  static bool showedWaiting = false;
+  static byte lastScreen = 0;  // 0 = values, 1 = waiting, 2 = bus fault
 
   if (!canStarted) {
     delay(1000);
@@ -410,19 +506,37 @@ void loop() {
   }
   lastDisplay = now;
 
-  // Nothing at all coming in is a different problem from a single missing
-  // message, and it deserves a screen that says what to check.
-  if (staleMessageCount(now) == NUM_CAN_MESSAGES) {
-    if (!showedWaiting) {
-      showWaitingForData();
-      showedWaiting = true;
+  bool busFault = (can.getError() & CAN_BUS_FAULT_MASK) != 0;
+  bool nothingAtAll = staleMessageCount(now) == NUM_CAN_MESSAGES;
+
+  // A bus fault with no data at all is worth its own screen: it separates "the
+  // ECU is not sending" from "the wiring will not carry it", which need
+  // completely different things checked.
+  if (busFault && nothingAtAll) {
+    if (lastScreen != 2) {
+      showMessage("CAN-fout op de bus",
+                  "Controleer CAN-H/L,",
+                  "massa en de twee",
+                  "afsluitweerstanden");
+      lastScreen = 2;
     }
     return;
   }
 
-  if (showedWaiting) {
+  if (nothingAtAll) {
+    if (lastScreen != 1) {
+      showMessage("Geen data van de",
+                  "ECU. Staat Dash",
+                  "Broadcasting aan?",
+                  "Zie werkboek blad 9");
+      lastScreen = 1;
+    }
+    return;
+  }
+
+  if (lastScreen != 0) {
     lcd.clear();
-    showedWaiting = false;
+    lastScreen = 0;
   }
 
   updateDisplay();

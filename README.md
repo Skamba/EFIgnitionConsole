@@ -108,22 +108,37 @@ If you move to Advanced and change the identifier, change `CAN_BASE_ID` to match
 ## What the display shows
 
 ```
-4200rpm  28°  92C  31C
- 100kPa  85%    3.40ms
-12.8afr (12.5)   14.1V
- 3.0bar  77%duty
+4200rpm   210C   31C
+ 105kPa    85%   28°
+12.8afr (12.5) 14.1V
+ 3.0bar  3.40ms  77%
 ```
 
 | Row | Values |
 | --- | --- |
-| 1 | engine speed, ignition advance, cylinder head temperature, inlet air temperature |
-| 2 | manifold pressure, throttle position, injector pulse width |
+| 1 | engine speed, cylinder head temperature, inlet air temperature |
+| 2 | manifold pressure, throttle position, ignition advance |
 | 3 | measured AFR, target AFR in brackets, board voltage |
-| 4 | fuel pressure, injector duty cycle |
+| 4 | fuel pressure, injector pulse width, injector duty cycle |
+
+Every field is wide enough for three digits. That is deliberate rather than
+generous: a cylinder head on this engine sits around 150 °C and peaks past 200,
+so three digits is the normal case here, and a tighter layout would run the two
+temperatures together exactly when the engine is hot enough that you want to
+read them.
+
+**A field showing dashes means the CAN message carrying it has stopped
+arriving**, not that the value is zero. Values are blanked per message rather
+than left frozen, so a stale reading can never be mistaken for a live one.
 
 The character in the bottom right is blank while all four CAN messages keep
-arriving; a digit is the number that have gone quiet. If nothing arrives at all,
-the screen says so and points at the Dash Broadcasting setting.
+arriving; a digit is the number that have gone quiet, and an **E** means the CAN
+controller is reporting a bus fault — error-passive or bus-off, which points at
+wiring, grounding or termination rather than at anything in the tune.
+
+If nothing arrives at all the screen says so and points at the Dash Broadcasting
+setting; if nothing arrives *and* the controller reports a fault, it says that
+instead, because those two need completely different things checked.
 
 **Injector duty is calculated here**, not sent by the ECU. It assumes one injector
 opening per engine cycle, which is what sequential injection gives — adjust
