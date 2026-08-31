@@ -1,13 +1,10 @@
 #include <Arduino.h>
 #include <LiquidCrystal_I2C.h>
-#include <string.h>
+#include <SPI.h>
+#include <mcp_can.h>
 
-LiquidCrystal_I2C lcd(0x27, 2, 1, 0, 4, 5, 6, 7, 3, POSITIVE);
-HardwareSerial &speeduinoSerial = Serial1;  // RX1 = 19, TX1 = 18
-
-// Module for reading Speeduino's serial3 port and displaying it on a 20x4 LCD.
-// This sketch expects the ECU secondary serial protocol to be set to
-// "Generic (Fixed List)" in TunerStudio.
+// Module for listening to an EFIgnition 46 (MegaSquirt-2/Extra) over CAN and
+// showing the result on a 20x4 LCD.
 //
 // Lex Sewuster (aka Zeiberstein)
 // 20200918 | initial creation
@@ -18,165 +15,261 @@ HardwareSerial &speeduinoSerial = Serial1;  // RX1 = 19, TX1 = 18
 // 20260412 | cleaned up naming and payload access for display fields
 // 20260412 | improved serial buffer cleanup before and after packet reads
 // 20260412 | switched advance display to inline LCD degree escape and hid status 0
+// 20260901 | rewritten for the EFIgnition 46: CAN instead of Speeduino serial
 //
-// See https://speeduino.com/wiki/index.php/Secondary_Serial_IO_interface
+// Why this changed
+// ----------------
+// The Speeduino spoke a secondary-serial protocol ("n" request, "n2" reply) that
+// the EFIgnition 46 does not implement. MegaSquirt-2/Extra instead offers "Dash
+// Broadcasting": it transmits a fixed set of channels over CAN on its own, with
+// no request needed. That is simpler and more robust than polling, and it does
+// not compete with TunerStudio for a port, so tuning and watching can happen at
+// the same time.
+//
+// Enable it in TunerStudio under CAN bus / Testmodes > Dash Broadcasting. Leave
+// the configuration on "Automatic", which is base identifier 1512 at 20 Hz.
+//
+// Two channels the Speeduino used to provide are NOT part of the dash broadcast:
+// the idle valve position and the engine status bits (running/cranking/ASE/
+// warmup). Their places are taken by injector pulse width, target AFR and the
+// calculated injector duty cycle, which matter more while the tune is being
+// built. If the status bits are ever needed, MegaSquirt can also broadcast its
+// complete realtime block ("CAN Broadcasting" -> outpc groups); that carries
+// everything but needs more configuration than one switch.
+//
+// See docs/howToGetStarted.txt for wiring.
 
-// Zero-based byte positions in Speeduino's legacy fixed secondary-serial "n" payload.
-constexpr byte SECL                    =   0;
-constexpr byte STATUS1                 =   1;
-constexpr byte ENGINE_STATUS           =   2;
-constexpr byte DWELL_MS10              =   3;
-constexpr byte MAP_LOW                 =   4;
-constexpr byte MAP_HIGH                =   5;
-constexpr byte IAT_WITH_OFFSET         =   6;
-constexpr byte COOLANT_WITH_OFFSET     =   7;
-constexpr byte BAT_CORRECTION          =   8;
-constexpr byte BATTERY10               =   9;
-constexpr byte O2                      =  10;
-constexpr byte EGO_CORRECTION          =  11;
-constexpr byte IAT_CORRECTION          =  12;
-constexpr byte WUE_CORRECTION          =  13;
-constexpr byte RPM_LOW                 =  14;
-constexpr byte RPM_HIGH                =  15;
-constexpr byte AE_AMOUNT               =  16;
-constexpr byte CORRECTIONS             =  17;
-constexpr byte VE                      =  18;
-constexpr byte AFR_TARGET              =  19;
-constexpr byte PW1_LOW                 =  20;
-constexpr byte PW1_HIGH                =  21;
-constexpr byte TPS_DOT_DIV10           =  22;
-constexpr byte ADVANCE                 =  23;
-constexpr byte TPS                     =  24;
-constexpr byte LOOPS_PER_SECOND_LOW    =  25;
-constexpr byte LOOPS_PER_SECOND_HIGH   =  26;
-constexpr byte FREE_RAM_LOW            =  27;
-constexpr byte FREE_RAM_HIGH           =  28;
-constexpr byte BOOST_TARGET_DIV2       =  29;
-constexpr byte BOOST_DUTY_DIV100       =  30;
-constexpr byte STATUS2                 =  31;
-constexpr byte RPM_DOT_LOW             =  32;
-constexpr byte RPM_DOT_HIGH            =  33;
-constexpr byte ETHANOL_PCT             =  34;
-constexpr byte FLEX_CORRECTION         =  35;
-constexpr byte FLEX_IGN_CORRECTION     =  36;
-constexpr byte IDLE_VALVE              =  37;
-constexpr byte TEST_OUTPUTS            =  38;
-constexpr byte O2_2                    =  39;
-constexpr byte BARO                    =  40;
-constexpr byte CANIN_00_LOW            =  41;
-constexpr byte CANIN_00_HIGH           =  42;
-constexpr byte CANIN_01_LOW            =  43;
-constexpr byte CANIN_01_HIGH           =  44;
-constexpr byte CANIN_02_LOW            =  45;
-constexpr byte CANIN_02_HIGH           =  46;
-constexpr byte CANIN_03_LOW            =  47;
-constexpr byte CANIN_03_HIGH           =  48;
-constexpr byte CANIN_04_LOW            =  49;
-constexpr byte CANIN_04_HIGH           =  50;
-constexpr byte CANIN_05_LOW            =  51;
-constexpr byte CANIN_05_HIGH           =  52;
-constexpr byte CANIN_06_LOW            =  53;
-constexpr byte CANIN_06_HIGH           =  54;
-constexpr byte CANIN_07_LOW            =  55;
-constexpr byte CANIN_07_HIGH           =  56;
-constexpr byte CANIN_08_LOW            =  57;
-constexpr byte CANIN_08_HIGH           =  58;
-constexpr byte CANIN_09_LOW            =  59;
-constexpr byte CANIN_09_HIGH           =  60;
-constexpr byte CANIN_10_LOW            =  61;
-constexpr byte CANIN_10_HIGH           =  62;
-constexpr byte CANIN_11_LOW            =  63;
-constexpr byte CANIN_11_HIGH           =  64;
-constexpr byte CANIN_12_LOW            =  65;
-constexpr byte CANIN_12_HIGH           =  66;
-constexpr byte CANIN_13_LOW            =  67;
-constexpr byte CANIN_13_HIGH           =  68;
-constexpr byte CANIN_14_LOW            =  69;
-constexpr byte CANIN_14_HIGH           =  70;
-constexpr byte CANIN_15_LOW            =  71;
-constexpr byte CANIN_15_HIGH           =  72;
-constexpr byte TPS_ADC                 =  73;
-constexpr byte ERROR_FLAGS             =  74;
-constexpr byte LAUNCH_CORRECTION       =  75;
-constexpr byte PW2_LOW                 =  76;
-constexpr byte PW2_HIGH                =  77;
-constexpr byte PW3_LOW                 =  78;
-constexpr byte PW3_HIGH                =  79;
-constexpr byte PW4_LOW                 =  80;
-constexpr byte PW4_HIGH                =  81;
-constexpr byte STATUS3                 =  82;
-constexpr byte ENGINE_PROTECT_STATUS   =  83;
-constexpr byte FUEL_LOAD_LOW           =  84;
-constexpr byte FUEL_LOAD_HIGH          =  85;
-constexpr byte IGN_LOAD_LOW            =  86;
-constexpr byte IGN_LOAD_HIGH           =  87;
-constexpr byte INJ_ANGLE_LOW           =  88;
-constexpr byte INJ_ANGLE_HIGH          =  89;
-constexpr byte IDLE_VALVE_2            =  90;  // Duplicate legacy slot for Speeduino's idleLoad field.
-constexpr byte CL_IDLE_TARGET          =  91;
-constexpr byte MAP_DOT_DIV10           =  92;
-constexpr byte VVT1_ANGLE              =  93;
-constexpr byte VVT1_TARGET_ANGLE       =  94;
-constexpr byte VVT1_DUTY               =  95;
-constexpr byte FLEX_BOOST_COR_LOW      =  96;
-constexpr byte FLEX_BOOST_COR_HIGH     =  97;
-constexpr byte BARO_CORRECTION         =  98;
-constexpr byte ASE_VALUE               =  99;
-constexpr byte VSS_LOW                 = 100;
-constexpr byte VSS_HIGH                = 101;
-constexpr byte GEAR                    = 102;
-constexpr byte FUEL_PRESSURE           = 103;
-constexpr byte OIL_PRESSURE            = 104;
-constexpr byte WMI_PW                  = 105;
-constexpr byte STATUS4                 = 106;
-constexpr byte VVT2_ANGLE              = 107;
-constexpr byte VVT2_TARGET_ANGLE       = 108;
-constexpr byte VVT2_DUTY               = 109;
-constexpr byte OUTPUTS_STATUS          = 110;
-constexpr byte FUEL_TEMP_WITH_OFFSET   = 111;
-constexpr byte FUEL_TEMP_CORRECTION    = 112;
-constexpr byte VE1                     = 113;
-constexpr byte VE2                     = 114;
-constexpr byte ADVANCE1                = 115;
-constexpr byte ADVANCE2                = 116;
-constexpr byte NITROUS_STATUS          = 117;
-constexpr byte TS_SD_STATUS            = 118;
-constexpr byte EMAP_LOW                = 119;
-constexpr byte EMAP_HIGH               = 120;
-constexpr byte FAN_DUTY                = 121;
-constexpr byte AIRCON_STATUS           = 122;
+// ---------------------------------------------------------------------------
+// Things you may need to change
+// ---------------------------------------------------------------------------
 
-constexpr byte BIT_ENGINE_RUN          =   0;
-constexpr byte BIT_ENGINE_CRANK        =   1;
-constexpr byte BIT_ENGINE_ASE          =   2;
-constexpr byte BIT_ENGINE_WARMUP       =   3;
-constexpr byte BIT_ENGINE_ACC          =   4;
-constexpr byte BIT_ENGINE_DCC          =   5;
-constexpr byte BIT_ENGINE_MAPACC       =   6;
-constexpr byte BIT_ENGINE_MAPDCC       =   7;
+// Chip select of the MCP2515 module. The other three SPI lines are fixed by the
+// Mega's hardware SPI: SI = 51, SO = 50, SCK = 52.
+constexpr byte CAN_CS_PIN = 53;
 
-constexpr int TEMPERATURE_OFFSET = 40;
-constexpr unsigned long PACKET_READ_TIMEOUT = 100UL;
-constexpr unsigned long UNEXPECTED_BYTES_WAITING_INTERVAL = 5UL;
-constexpr unsigned long POLLING_INTERVAL = 1000UL;
+// Crystal fitted on the MCP2515 module. Boards ship with either, the silkscreen
+// or the metal can tells you which. Getting this wrong is the single most common
+// reason no frames arrive: the controller still initialises, it just listens at
+// the wrong bit rate. Use MCP_8MHZ if your module has an 8 MHz crystal.
+constexpr byte CAN_CRYSTAL = MCP_16MHZ;
 
-constexpr byte HEADER_SIZE = 3;
-constexpr byte PAYLOAD_OFFSET = HEADER_SIZE;  // packet[3] is payload byte 0.
-constexpr int MAX_PACKET_SIZE = 300;
+// Fuel pressure is measured by this board, not by the ECU. The EFIgnition 46 has
+// three analogue inputs and all three are taken (lambda, MAP, throttle), so the
+// sensor that used to hang on the Speeduino moves here. Nothing is lost by that:
+// the Speeduino only displayed the value, it never corrected fuelling with it.
+constexpr bool FUEL_PRESSURE_CONNECTED = true;
+constexpr byte FUEL_PRESSURE_PIN = A0;
 
-constexpr byte PACKET_STATUS_OK                = 0;
-constexpr byte PACKET_STATUS_OVERFLOW          = 1;
-constexpr byte PACKET_STATUS_HEADER_INCOMPLETE = 2;
-constexpr byte PACKET_STATUS_HEADER_INVALID    = 3;
-constexpr byte PACKET_STATUS_INCOMPLETE        = 4;
-constexpr byte PACKET_STATUS_TOO_LONG          = 5;
+// Calibration, in hundredths of a bar, at 0 V and at 5 V. Most automotive
+// pressure sensors output 0.5 V at zero pressure and 4.5 V at full scale, so
+// those two points fall outside the sensor's own range and have to be
+// extrapolated -- exactly like the MAP sensor calibration in TunerStudio.
+//
+// The values below are for a 0.5-4.5 V sensor rated 0-60 psi (0-4.14 bar):
+//     at 0 V: -0.5 V * (4.14 bar / 4.0 V) = -0.52 bar
+//     at 5 V:  4.14 + 0.52                =  4.66 bar
+//
+// CHECK THIS AGAINST THE SENSOR ON THE CAR. The old Speeduino tune had 0 bar at
+// 0 V and 4.19 bar at 5 V, a straight line across the whole range, which is not
+// how a 0.5-4.5 V sensor behaves. If that is the sensor fitted, the old reading
+// was offset high at rest and a few percent low at working pressure.
+constexpr int FUEL_PRESSURE_CBAR_AT_0V = -52;
+constexpr int FUEL_PRESSURE_CBAR_AT_5V = 466;
+
+// Injector openings per injector per engine cycle, as a fraction. Sequential
+// injection on this engine gives one full opening per 720 degrees, so 1/1. Set
+// this to match the tune: with semi-sequential (two half pulses per cycle) the
+// duty calculation needs 2/2, which is the same number, but with a batch setup
+// firing every revolution it would be 2/1. Only the duty display uses it.
+constexpr byte SQUIRTS_PER_CYCLE = 1;
+constexpr byte ALTERNATE_DIVIDER = 1;
+
+// ---------------------------------------------------------------------------
+// The dash broadcast
+// ---------------------------------------------------------------------------
+
+// Base identifier, and the four consecutive messages that follow it. These are
+// the "Automatic" defaults; change the base if the tune uses Advanced mode.
+constexpr unsigned long CAN_BASE_ID = 1512;  // 0x5E8
+
+constexpr unsigned long CAN_ID_ENGINE   = CAN_BASE_ID + 0;  // map, rpm, clt, tps
+constexpr unsigned long CAN_ID_FUELLING = CAN_BASE_ID + 1;  // pw1, pw2, mat, advance
+constexpr unsigned long CAN_ID_MIXTURE  = CAN_BASE_ID + 2;  // afr target, afr, ego corr
+constexpr unsigned long CAN_ID_ELECTRIC = CAN_BASE_ID + 3;  // battery, spare adc, knock
+
+constexpr byte NUM_CAN_MESSAGES = 4;
+
+// The ECU is a 16-bit Motorola part, so every 16-bit value travels most
+// significant byte first. An AVR is the other way round, hence the explicit
+// assembly below rather than a memcpy.
+static int readSigned16(const byte *data, byte offset) {
+  return (int)(((unsigned int)data[offset] << 8) | data[offset + 1]);
+}
+
+static unsigned int readUnsigned16(const byte *data, byte offset) {
+  return ((unsigned int)data[offset] << 8) | data[offset + 1];
+}
+
+// The firmware always sends temperatures in tenths of a degree Fahrenheit. The
+// Celsius setting in TunerStudio only affects what TunerStudio itself draws, so
+// the conversion has to happen here.
+static int fahrenheitTenthsToCelsius(int tenthsF) {
+  return ((long)tenthsF - 320L) * 5L / 90L;
+}
+
+// Pulse width arrives in timer ticks of 0.666 us, not in microseconds. Returned
+// in hundredths of a millisecond so it can be printed without floating point.
+static unsigned int pulseWidthTicksToHundredthMs(unsigned int ticks) {
+  return (unsigned int)(((unsigned long)ticks * 666UL) / 10000UL);
+}
+
+// Injector duty, in whole percent.
+//
+//   cycle time (ms) = 120000 / rpm            (four-stroke: two revolutions)
+//   pulse width (ms) = ticks * 0.000666
+//   duty = 100 * squirts / divider * pw / cycle time
+//
+// Folding the constants together gives ticks * rpm / 1801802 for one opening per
+// cycle, which stays inside a 32-bit integer for any pulse width this engine can
+// produce.
+static byte injectorDutyPercent(unsigned int pulseWidthTicks, unsigned int rpm) {
+  if (rpm == 0) {
+    return 0;
+  }
+  unsigned long duty = (unsigned long)pulseWidthTicks * (unsigned long)rpm;
+  duty = duty * SQUIRTS_PER_CYCLE / ALTERNATE_DIVIDER / 1801802UL;
+  return (duty > 255UL) ? 255 : (byte)duty;
+}
+
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+
+LiquidCrystal_I2C lcd(0x27, 2, 1, 0, 4, 5, 6, 7, 3, POSITIVE);
+MCP_CAN can(CAN_CS_PIN);
 
 constexpr int NUM_DISPLAY_COLS = 20;
 constexpr int NUM_DISPLAY_ROWS = 4;
 
-byte packet[MAX_PACKET_SIZE];  // More than enough for the maximum payload plus header.
-byte packetStatusCode = PACKET_STATUS_OK;
-byte payloadLength = 0;
+// How long a message may stay away before its values are no longer believed.
+// The ECU sends at 20 Hz, so a second is already forty missed messages.
+constexpr unsigned long DATA_TIMEOUT = 1000UL;
+
+// The LCD is driven over I2C and redrawing it costs time, so it is refreshed far
+// slower than the messages arrive. Everything in between is still read, so the
+// values shown are always the most recent ones.
+constexpr unsigned long DISPLAY_INTERVAL = 250UL;
+
+struct EngineData {
+  int mapKpaTenths;
+  unsigned int rpm;
+  int coolantTenthsF;
+  int throttleTenths;
+
+  unsigned int pulseWidthTicks;
+  int inletTenthsF;
+  int advanceTenths;
+
+  byte afrTargetTenths;
+  byte afrTenths;
+
+  int batteryTenths;
+};
+
+EngineData engineData;
+unsigned long lastSeen[NUM_CAN_MESSAGES];
+bool canStarted = false;
+
+static bool messageFresh(byte index, unsigned long now) {
+  return (lastSeen[index] != 0) && ((now - lastSeen[index]) < DATA_TIMEOUT);
+}
+
+static byte staleMessageCount(unsigned long now) {
+  byte stale = 0;
+  for (byte i = 0; i < NUM_CAN_MESSAGES; i++) {
+    if (!messageFresh(i, now)) {
+      stale++;
+    }
+  }
+  return stale;
+}
+
+// ---------------------------------------------------------------------------
+// Reading
+// ---------------------------------------------------------------------------
+
+// Empties the receive buffer and files whatever was in it. Called far more often
+// than the display is redrawn so the MCP2515 never overflows.
+void readCanMessages() {
+  unsigned long id = 0;
+  byte length = 0;
+  byte data[8];
+
+  while (can.checkReceive() == CAN_MSGAVAIL) {
+    if (can.readMsgBuf(&id, &length, data) != CAN_OK) {
+      return;
+    }
+    if (length < 8) {
+      continue;  // every dash broadcast message is a full eight bytes
+    }
+
+    switch (id) {
+      case CAN_ID_ENGINE:
+        engineData.mapKpaTenths = readSigned16(data, 0);
+        engineData.rpm = readUnsigned16(data, 2);
+        engineData.coolantTenthsF = readSigned16(data, 4);
+        engineData.throttleTenths = readSigned16(data, 6);
+        lastSeen[0] = millis();
+        break;
+
+      case CAN_ID_FUELLING:
+        engineData.pulseWidthTicks = readUnsigned16(data, 0);
+        // bytes 2-3 hold the second injector, which mirrors the first here
+        engineData.inletTenthsF = readSigned16(data, 4);
+        engineData.advanceTenths = readSigned16(data, 6);
+        lastSeen[1] = millis();
+        break;
+
+      case CAN_ID_MIXTURE:
+        // Both are single bytes holding AFR times ten, so they run out at 25.5.
+        // A sensor in free air reads past that; clamping keeps the display sane.
+        engineData.afrTargetTenths = data[0];
+        engineData.afrTenths = data[1];
+        lastSeen[2] = millis();
+        break;
+
+      case CAN_ID_ELECTRIC:
+        engineData.batteryTenths = readSigned16(data, 0);
+        // bytes 2-5 are the ECU's spare analogue inputs, unused on this car
+        lastSeen[3] = millis();
+        break;
+
+      default:
+        break;  // something else on the bus; not ours
+    }
+  }
+}
+
+// Fuel pressure in tenths of a bar, measured by this board. Averaged over a few
+// samples because a fuel rail pulses and the display should not flicker.
+int readFuelPressureTenths() {
+  constexpr byte SAMPLES = 8;
+  unsigned int total = 0;
+
+  for (byte i = 0; i < SAMPLES; i++) {
+    total += analogRead(FUEL_PRESSURE_PIN);
+  }
+
+  long counts = total / SAMPLES;
+  long span = FUEL_PRESSURE_CBAR_AT_5V - FUEL_PRESSURE_CBAR_AT_0V;
+  long centibar = FUEL_PRESSURE_CBAR_AT_0V + (span * counts) / 1023L;
+
+  return (int)(centibar / 10);
+}
+
+// ---------------------------------------------------------------------------
+// Display
+// ---------------------------------------------------------------------------
 
 void lcdprint(byte col, byte row, int num, const char *fmt) {
   static char numBuf[21];
@@ -202,101 +295,67 @@ void lcdprintTenths(byte col, byte row, int value10, const char *suffix, byte wh
   lcd.print(numBuf);
 }
 
-const char *engineStatus(byte status) {
-  static const char statusChars[] = {'R', 'C', 'A', 'W', 'a', 'd', '<', '>'};
-  static char buf[7] = {' ', ' ', ' ', ' ', ' ', ' ', '\0'};
-  int bufPos = 5;
-
-  for (int bitNr = BIT_ENGINE_RUN; bitNr <= BIT_ENGINE_MAPDCC; bitNr++) {
-    if (status & (1 << bitNr)) {
-      buf[bufPos] = statusChars[bitNr];
-      bufPos--;
-    }
-  }
-
-  for (int i = bufPos; i >= 0; i--) {
-    buf[i] = ' ';
-  }
-
-  return buf;
+void lcdprintHundredths(byte col, byte row, unsigned int value100, const char *suffix) {
+  static char numBuf[21];
+  lcd.setCursor(col, row);
+  snprintf(numBuf, sizeof(numBuf), "%2u.%02u%s", value100 / 100, value100 % 100, suffix);
+  lcd.print(numBuf);
 }
 
-bool readExtraCharsIfAny() {
-  unsigned long readStart = millis();
-  bool discardedBytes = false;
-
-  while ((millis() - readStart) < UNEXPECTED_BYTES_WAITING_INTERVAL) {
-    if (speeduinoSerial.available() == 0) {
-      continue;
-    }
-    discardedBytes = true;
-    speeduinoSerial.read();
-  }
-
-  return discardedBytes;
+void showWaitingForData() {
+  lcd.clear();
+  lcdprint(0, 0, "Geen data van de");
+  lcdprint(0, 1, "ECU. Staat Dash");
+  lcdprint(0, 2, "Broadcasting aan?");
+  lcdprint(0, 3, "Zie werkboek blad 9");
 }
 
-byte requestAndReadPacket() {
-  int bytesInPacket = 0;
-  int expectedPacketSize = -1;
-  byte incomingByte = 0;
-  bool hasDiscardedBufferedBytes = false;
-  unsigned long readStart = millis();
+void updateDisplay() {
+  unsigned long now = millis();
 
-  memset(packet, 0, sizeof(packet));
-  payloadLength = 0;
+  // Row 0 -- what the engine is doing
+  lcdprint(0, 0, (int)engineData.rpm, "%4drpm ");
+  lcdprint(8, 0, engineData.advanceTenths / 10, "%3d\xDF ");  // 0xDF is the HD44780 degree sign
+  lcdprint(12, 0, fahrenheitTenthsToCelsius(engineData.coolantTenthsF), "%3dC");
+  lcdprint(16, 0, fahrenheitTenthsToCelsius(engineData.inletTenthsF), "%3dC");
 
-  // Discard stale bytes from a previous read before requesting fresh data.
-  readExtraCharsIfAny();
-  speeduinoSerial.print("n");
+  // Row 1 -- load, throttle and how long the injector is open
+  lcdprint(0, 1, engineData.mapKpaTenths / 10, "%4dkPa ");
+  lcdprint(8, 1, engineData.throttleTenths / 10, "%3d%% ");
+  lcdprintHundredths(13, 1, pulseWidthTicksToHundredthMs(engineData.pulseWidthTicks), "ms");
 
-  // Read until the expected packet length is complete or the timeout expires.
-  while ((millis() - readStart) < PACKET_READ_TIMEOUT) {
-    if (speeduinoSerial.available() == 0) {
-      continue;
-    }
-
-    incomingByte = speeduinoSerial.read();
-
-    if (bytesInPacket < MAX_PACKET_SIZE) {
-      packet[bytesInPacket] = incomingByte;
-    }
-    bytesInPacket++;
-
-    if (bytesInPacket == HEADER_SIZE) {
-      if ((packet[0] != 'n') || (packet[1] != '2')) {
-        readExtraCharsIfAny();
-        return PACKET_STATUS_HEADER_INVALID;
-      }
-      payloadLength = packet[2];
-      expectedPacketSize = HEADER_SIZE + packet[2];
-    }
-
-    if ((expectedPacketSize >= HEADER_SIZE) && (bytesInPacket == expectedPacketSize)) {
-      break;
-    }
+  // Row 2 -- mixture against its target, and the board voltage the ECU sees
+  lcdprintTenths(0, 2, engineData.afrTenths, "afr");
+  lcd.setCursor(8, 2);
+  {
+    static char buf[8];
+    snprintf(buf, sizeof(buf), "(%2d.%1d)", engineData.afrTargetTenths / 10,
+             engineData.afrTargetTenths % 10);
+    lcd.print(buf);
   }
+  lcdprintTenths(15, 2, engineData.batteryTenths, "V");
 
-  // Wait a little longer for unexpected trailing bytes and discard them if seen.
-  hasDiscardedBufferedBytes = readExtraCharsIfAny();
-
-  if (bytesInPacket < HEADER_SIZE) {
-    return PACKET_STATUS_HEADER_INCOMPLETE;
+  // Row 3 -- fuel pressure from our own sensor, and how hard the injector works
+  if (FUEL_PRESSURE_CONNECTED) {
+    lcdprintTenths(0, 3, readFuelPressureTenths(), "bar");
   }
-
-  if (bytesInPacket < expectedPacketSize) {
-    return PACKET_STATUS_INCOMPLETE;
+  else {
+    lcdprint(0, 3, "       ");
   }
+  lcdprint(8, 3, injectorDutyPercent(engineData.pulseWidthTicks, engineData.rpm), "%3d%%duty");
 
-  // This code assumes Speeduino's fixed-list "n2" payload keeps the existing field
-  // offsets stable and only ever grows with appended fields, not by removing fields
-  // before FUEL_PRESSURE.
-  if (hasDiscardedBufferedBytes) {
-    return PACKET_STATUS_TOO_LONG;
+  // Bottom right corner: blank while all four messages keep arriving, otherwise
+  // how many of them have gone quiet.
+  byte stale = staleMessageCount(now);
+  if (stale == 0) {
+    lcdprint(19, 3, " ");
   }
-
-  return PACKET_STATUS_OK;
+  else {
+    lcdprint(19, 3, stale, "%1d");
+  }
 }
+
+// ---------------------------------------------------------------------------
 
 void setup() {
   lcd.begin(NUM_DISPLAY_COLS, NUM_DISPLAY_ROWS);
@@ -314,44 +373,57 @@ void setup() {
 
   lcd.backlight();
   lcd.clear();
-  speeduinoSerial.begin(115200);
+
+  memset(&engineData, 0, sizeof(engineData));
+  memset(lastSeen, 0, sizeof(lastSeen));
+
+  // 500 kbit/s and 11-bit identifiers: both fixed in the ECU's firmware and not
+  // adjustable from TunerStudio.
+  canStarted = (can.begin(MCP_ANY, CAN_500KBPS, CAN_CRYSTAL) == CAN_OK);
+
+  if (canStarted) {
+    can.setMode(MCP_NORMAL);  // listen and acknowledge; the bus needs the ack
+    pinMode(CAN_CS_PIN, OUTPUT);
+  }
+  else {
+    lcdprint(0, 0, "CAN start mislukt");
+    lcdprint(0, 1, "Controleer bedrading");
+    lcdprint(0, 2, "en het kristal op de");
+    lcdprint(0, 3, "module (8 of 16MHz)");
+  }
 }
 
 void loop() {
-  unsigned long cycleStart = millis();
+  static unsigned long lastDisplay = 0;
+  static bool showedWaiting = false;
 
-  packetStatusCode = requestAndReadPacket();
-
-  if (packetStatusCode == PACKET_STATUS_OK) {
-    const byte *payload = packet + PAYLOAD_OFFSET;
-
-    lcdprint(0, 0, (uint16_t(payload[RPM_HIGH]) << 8) | payload[RPM_LOW], "%4drpm ");
-    lcdprint(8, 0, payload[ADVANCE], "%3d\xDF ");  // The HD44780 LCD expects 0xDF for the degree symbol.
-    lcdprint(12, 0, ((int)payload[COOLANT_WITH_OFFSET]) - TEMPERATURE_OFFSET, "%3dC");
-    lcdprint(16, 0, ((int)payload[IAT_WITH_OFFSET]) - TEMPERATURE_OFFSET, "%3dC");
-
-    lcdprint(0, 1, (uint16_t(payload[MAP_HIGH]) << 8) | payload[MAP_LOW], "%4dkPa ");
-    lcdprint(8, 1, payload[IDLE_VALVE], "%3d ");
-    lcdprint(12, 1, payload[TPS], "%3d ");
-    lcdprint(16, 1, payload[CORRECTIONS], "%3d%%");
-
-    lcdprintTenths(0, 2, payload[O2], "afr ");
-    lcdprintTenths(8, 2, payload[BATTERY10], "V ");
-    lcdprint(14, 2, engineStatus(payload[ENGINE_STATUS]));
-
-    long fuelPressure10 = (long(payload[FUEL_PRESSURE]) * 6895L + 5000L) / 10000L;
-    lcdprintTenths(0, 3, fuelPressure10, "bar            ", 1);
-
-    lcdprint(19, 3, " ");
-  }
-  else {
-    lcdprint(19, 3, packetStatusCode, "%1d");
+  if (!canStarted) {
+    delay(1000);
+    return;
   }
 
-  while( millis() - cycleStart < POLLING_INTERVAL) {
-    // Wait until the polling interval has elapsed before starting the next cycle.
-    // This ensures a consistent update rate and prevents flooding the serial connection with requests.
-    delay(100);
+  readCanMessages();
+
+  unsigned long now = millis();
+  if ((now - lastDisplay) < DISPLAY_INTERVAL) {
+    return;
   }
-  
+  lastDisplay = now;
+
+  // Nothing at all coming in is a different problem from a single missing
+  // message, and it deserves a screen that says what to check.
+  if (staleMessageCount(now) == NUM_CAN_MESSAGES) {
+    if (!showedWaiting) {
+      showWaitingForData();
+      showedWaiting = true;
+    }
+    return;
+  }
+
+  if (showedWaiting) {
+    lcd.clear();
+    showedWaiting = false;
+  }
+
+  updateDisplay();
 }

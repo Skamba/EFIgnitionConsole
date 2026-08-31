@@ -1,73 +1,174 @@
-The Speeduino can react to commands on its serial ports. One of those ports is the
-regular USB port, which TunerStudio also uses.
+EFIgnition Console - wiring and setup
+=====================================
 
-For this project it is more practical to leave the USB connection dedicated to
-TunerStudio and use Speeduino's secondary serial port for the display helper Arduino.
-That way there is no need to swap cables.
+This display listens to an EFIgnition 46 engine management unit over CAN and shows
+the live values on a 20x4 character LCD. A helper Arduino Mega 2560 does the work;
+the ECU itself is not modified in any way.
 
-Enable the secondary interface in TunerStudio under Accessories. The firmware in this
-repository expects the protocol to be set to "Generic (Fixed List)".
-See docs/images/enableSecondarySerialInterface.png.
+Earlier versions of this project talked to a Speeduino over its secondary serial
+port. That is gone. The EFIgnition 46 is a MegaSquirt-2/Extra based unit and does
+not speak the Speeduino protocol. See "Why CAN" at the bottom.
 
-On a Speeduino based on the Arduino Mega 2560, the secondary interface is tied to
-Serial3:
-- Speeduino TX3 = pin 14
-- Speeduino RX3 = pin 15
 
-See docs/images/pinoutMega2560.png for their location. In
-docs/images/connectingPin14and15.jpg you can see an example of how these wires were
-added on the Speeduino board.
+What you need
+-------------
 
-I used 10k resistors in series with the serial wires. The goal is simply to make the
-connection a bit more forgiving if a wire is accidentally shorted. For this low-current
-serial link, that extra resistance has not caused problems in practice.
+- Arduino Mega 2560 (helper board)
+- 20x4 character LCD with an I2C backpack
+- MCP2515 CAN module with a TJA1050 transceiver
+- Fuel pressure sensor (the one that used to hang on the Speeduino)
+- 120 ohm resistor, only if the CAN module does not already have one
 
-Current helper-Arduino wiring
+The MCP2515 module is the only new part compared to the Speeduino setup.
 
-The current Lomax version no longer uses a software serial port on pins 10 and 11.
-The helper firmware now uses the Arduino Mega 2560 hardware serial port Serial1.
+Watch the crystal on the CAN module. They ship with either an 8 MHz or a 16 MHz
+crystal, printed on the metal can or on the silkscreen. It must match CAN_CRYSTAL
+in src/main.cpp. Get this wrong and the module still starts up quite happily, it
+just listens at the wrong bit rate and nothing ever arrives.
 
-Helper Arduino Serial1 pins:
-- RX1 = pin 19
-- TX1 = pin 18
 
-Wire the two boards as a crossed serial connection:
-- Speeduino TX3 pin 14 -> helper Arduino RX1 pin 19
-- Speeduino RX3 pin 15 -> helper Arduino TX1 pin 18
+Wiring
+------
 
-Because of that change, the helper board must be Mega-2560-compatible or another
-board that offers the same hardware serial port in the code. The current PlatformIO
-configuration targets an Arduino Mega 2560.
+1. LCD to the Mega (I2C)
 
-The helper firmware lives in src/main.cpp in this repository.
+   LCD backpack SDA   ->  Mega pin 20
+   LCD backpack SCL   ->  Mega pin 21
+   LCD backpack VCC   ->  Mega 5V
+   LCD backpack GND   ->  Mega GND
 
-Protocol changes in this version
+   The backpack address is 0x27 in src/main.cpp. Some boards ship as 0x3F; if the
+   screen stays blank but the backlight works, that is the first thing to try.
 
-This version sends the lowercase "n" command to Speeduino, not the older "a" command.
-That returns the larger fixed secondary-serial data block, which gives the display code
-access to more live values.
+2. CAN module to the Mega (SPI)
 
-The serial read loop was also tightened up:
-- it validates the response header before accepting a packet
-- it uses the payload length from the packet itself
-- it detects incomplete packets
-- it discards unexpected trailing bytes
-- it keeps a fixed polling interval so the display updates stay predictable
+   MCP2515 CS    ->  Mega pin 53
+   MCP2515 SI    ->  Mega pin 51
+   MCP2515 SO    ->  Mega pin 50
+   MCP2515 SCK   ->  Mega pin 52
+   MCP2515 VCC   ->  Mega 5V
+   MCP2515 GND   ->  Mega GND
+   MCP2515 INT   ->  not connected
 
-In practice this makes the display more tolerant of bad serial data and quicker to
-recover when a read goes wrong.
+   Pins 50 to 52 are the Mega's hardware SPI and cannot be moved. Only the chip
+   select is free; it is CAN_CS_PIN in src/main.cpp. The interrupt line is left
+   off on purpose: the firmware empties the receive buffer in its main loop, which
+   is fast enough for four messages at 20 Hz.
+
+3. CAN module to the ECU
+
+   MCP2515 CAN-H  ->  ECU CAN-H
+   MCP2515 CAN-L  ->  ECU CAN-L
+
+   Ask EFIgnition which pins on the connector carry CAN. Do not guess.
+
+   Use a twisted pair for these two. A CAN bus wants exactly two 120 ohm
+   terminating resistors, one at each end. Most MCP2515 modules have one fitted,
+   sometimes behind a jumper. Check whether the ECU has one too: two is correct,
+   three makes the signal too weak, one makes it reflect.
+
+4. Fuel pressure sensor to the Mega
+
+   Sensor signal  ->  Mega A0
+   Sensor 5V      ->  Mega 5V
+   Sensor ground  ->  Mega GND
+
+   This sensor used to be wired to the Speeduino, which had a spare analogue
+   input. The EFIgnition 46 has three analogue inputs and all three are taken by
+   the wideband, the MAP sensor and the throttle position sensor, so there is no
+   room for it there.
+
+   Nothing is lost by moving it here. The Speeduino only ever displayed the value:
+   there is no fuel pressure correction or protection in its firmware, unlike oil
+   pressure, which does have one. The reading was for the driver, not for the ECU.
+
+   A 0 to 5 V sensor connects straight to an analogue input; no divider needed.
+   Confirm the sensor does not swing above 5 V before connecting it.
+
+   Then set the calibration in src/main.cpp. FUEL_PRESSURE_CBAR_AT_0V and
+   FUEL_PRESSURE_CBAR_AT_5V are the pressure in hundredths of a bar at 0 V and at
+   5 V, the same two-point form TunerStudio uses. The defaults suit a 0.5-4.5 V
+   sensor rated 0 to 60 psi. Read the type off the sensor and recalculate; do not
+   copy the old Speeduino numbers, which described a straight 0 to 5 V line and
+   were probably wrong for that sensor.
+
+5. Old wiring to remove
+
+   The serial link on Mega pins 18 and 19 went to the Speeduino and has no purpose
+   any more. So do the 10k resistors that sat in those two wires.
+
+
+Setting up the ECU
+------------------
+
+One switch. In TunerStudio, open CAN bus / Testmodes > Dash Broadcasting and set
+Enable to on. Leave Configuration on "Automatic".
+
+Automatic means base identifier 1512 and 20 Hz, which is what src/main.cpp expects.
+If you switch to Advanced and change the base identifier, change CAN_BASE_ID to
+match.
+
+Nothing else in the tune needs to change. The other CAN broadcasting options are
+for linking several MegaSquirt units together and can stay off.
+
+
+What is on the screen
+---------------------
+
+    4200rpm  28°  92C  31C
+     100kPa  85%    3.40ms
+    12.8afr (12.5)   14.1V
+     3.0bar  77%duty
+
+    row 1  engine speed, ignition advance, cylinder head, inlet air
+    row 2  manifold pressure, throttle, injector pulse width
+    row 3  measured AFR, target AFR in brackets, board voltage
+    row 4  fuel pressure, injector duty cycle
+
+The character in the bottom right corner is blank while all four CAN messages keep
+arriving. A digit there is the number of messages that have gone quiet, which is
+usually a wiring or termination problem. If nothing arrives at all, the screen says
+so and tells you to check Dash Broadcasting.
+
+Two values from the Speeduino version are not part of the CAN dash broadcast and
+have gone: the idle valve position and the engine status letters (R, C, A, W).
+Their places went to injector pulse width, target AFR and injector duty, which are
+more useful while the tune is still being built.
+
+Injector duty is calculated here, not sent by the ECU. It assumes one injector
+opening per engine cycle, which is what sequential injection gives. If the tune is
+changed to semi-sequential or batch, update SQUIRTS_PER_CYCLE and ALTERNATE_DIVIDER
+in src/main.cpp.
+
+
+Why CAN
+-------
+
+The Speeduino was polled: the display asked, the ECU answered. The EFIgnition 46
+can broadcast instead, sending a fixed set of values on its own several times a
+second. That removes all the request timing and packet validation the old firmware
+needed, and it does not compete with TunerStudio for a connection, so you can tune
+on the laptop and watch the display at the same time.
+
+Full detail on the messages, their contents and where those numbers come from is in
+the Efignition project repository, docs/12-console.md.
+
 
 Photos
+------
 
 docs/images/helperArduino.jpg still gives a useful impression of the helper hardware
-and regulator mounting, but treat the pin numbers in older photos or notes with care:
-the current wiring uses Serial1 on pins 18 and 19, not the earlier software-serial
-pair.
+and the regulator mounting. Treat the pin numbers in the older photos with care:
+they show the Speeduino-era serial wiring, which no longer applies.
 
-Maybe you can also spot a white cable in the photo. That one was intended for future
-knock-detection work.
+The white cable visible in that photo was intended for future knock-detection work.
+
+docs/images/connectingPin14and15.jpg and docs/images/enableSecondarySerialInterface.png
+are Speeduino-era references and no longer describe how this is wired.
+
 
 Stuff I bought
+--------------
 
 https://www.aliexpress.com/item/32920769382.html
 (LCD Board 2004 20x4 LCD module)
@@ -78,7 +179,12 @@ https://www.aliexpress.com/item/2035880451.html
 https://www.aliexpress.com/item/4000235952850.html
 (Pro mini MEGA2560 helper board - choose the correct Mega-based board when ordering)
 
+MCP2515 CAN module with TJA1050 transceiver - widely available, but check the
+crystal frequency before ordering and note which one you got.
+
+
 3D printed gauge
+----------------
 
 I made a display holder that fits in an 80 mm hole in my dashboard.
 See docs/images/3dPrintedGaugeFor20x4Display.jpg.

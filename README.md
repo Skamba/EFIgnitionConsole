@@ -1,38 +1,174 @@
-# SpeeduinoConsole
+# EFIgnition Console
 
-PlatformIO and VS Code project for reading Speeduino data and showing it on a 20x4 character LCD.
+A 20x4 character display for the Lomax, driven by a helper Arduino Mega 2560 that
+listens to an **EFIgnition 46** engine management unit over **CAN**.
 
-This repository was cloned from the original GitHub project so the existing Git history stays intact, and the files are now organized for day-to-day development in VS Code.
+This repository was cloned from the original Speeduino display project so the
+existing Git history stays intact, and the files are organized for day-to-day
+development in VS Code.
 
-## Current Lomax Version
+## What changed with the EFIgnition 46
 
-- Uses Speeduino's lowercase `"n"` command instead of the older `"a"` request, so the helper receives the larger fixed secondary-serial data block.
-- Uses the helper Arduino's hardware `Serial1` port (`RX1 = 19`, `TX1 = 18`) instead of a `SoftwareSerial` port.
-- Uses a stricter packet read loop that validates the `n2` header, tracks payload length, rejects incomplete or overlong packets, and recovers faster from bad serial data.
+The car moved from a Speeduino to an EFIgnition 46, which is based on
+MegaSquirt-2/Extra. It does not speak the Speeduino secondary-serial protocol, so
+the previous firmware went quiet on the new ECU.
 
-## Project Layout
+Rather than reimplementing a request/response protocol, this version uses
+MegaSquirt's **Dash Broadcasting**: the ECU transmits a fixed set of channels over
+CAN on its own, several times a second. Nothing has to be asked for.
 
-- `src/main.cpp`: main Arduino application
-- `platformio.ini`: PlatformIO environment for an Arduino Mega 2560 helper board
-- `docs/howToGetStarted.txt`: wiring and setup notes for the current Lomax hardware
+| | Speeduino (before) | EFIgnition 46 (now) |
+| --- | --- | --- |
+| Transport | secondary serial, 115200 baud | CAN, 500 kbit/s, 11-bit identifiers |
+| Style | display polls, ECU answers | ECU broadcasts, display listens |
+| Shared with TunerStudio | no (separate serial port) | no (different bus entirely) |
+| Setup in the tune | secondary serial set to Generic (Fixed List) | Dash Broadcasting on, Automatic |
+
+Two practical gains: there is no request timing or packet validation to get right
+any more, and tuning on the laptop and watching the display can happen at the same
+time.
+
+## Wiring
+
+Full detail, including what to remove and how to calibrate the fuel pressure
+sensor, is in [`docs/howToGetStarted.txt`](docs/howToGetStarted.txt). In short:
+
+**CAN module (MCP2515) to the Mega — SPI**
+
+| Module | Mega |
+| --- | --- |
+| CS | pin 53 |
+| SI | pin 51 |
+| SO | pin 50 |
+| SCK | pin 52 |
+| VCC / GND | 5V / GND |
+| INT | not connected |
+
+Pins 50-52 are the Mega's hardware SPI and cannot be moved. Only the chip select
+is free (`CAN_CS_PIN`).
+
+**CAN module to the ECU**
+
+| Module | ECU |
+| --- | --- |
+| CAN-H | CAN-H |
+| CAN-L | CAN-L |
+
+Twisted pair. A CAN bus needs exactly two 120 ohm terminating resistors, one at
+each end — most MCP2515 modules already have one, so check whether the ECU does
+too.
+
+**LCD to the Mega — I2C**
+
+| LCD backpack | Mega |
+| --- | --- |
+| SDA | pin 20 |
+| SCL | pin 21 |
+| VCC / GND | 5V / GND |
+
+Backpack address `0x27`. Some boards ship as `0x3F`.
+
+**Fuel pressure sensor to the Mega — analogue**
+
+| Sensor | Mega |
+| --- | --- |
+| signal | A0 |
+| 5V / ground | 5V / GND |
+
+This sensor used to hang on the Speeduino. The EFIgnition 46 has three analogue
+inputs and all three are taken (wideband, MAP, throttle), so it moves to the
+helper board. Nothing is lost by that: the Speeduino only ever *displayed* the
+value — its firmware has no fuel pressure correction or protection, unlike oil
+pressure, which does have one.
+
+Set `FUEL_PRESSURE_CBAR_AT_0V` and `FUEL_PRESSURE_CBAR_AT_5V` in
+[`src/main.cpp`](src/main.cpp) to match the sensor: pressure in hundredths of a
+bar at 0 V and at 5 V, the same two-point form TunerStudio uses. The defaults suit
+a 0.5-4.5 V sensor rated 0-60 psi. Do not copy the old Speeduino calibration,
+which described a straight 0-5 V line and was probably wrong for that sensor.
+
+**Removed:** the serial link on Mega pins 18 and 19, and the 10k resistors in
+those wires. That went to the Speeduino.
+
+### Check the crystal
+
+MCP2515 modules ship with either an 8 MHz or a 16 MHz crystal. It must match
+`CAN_CRYSTAL` in `src/main.cpp`. Get it wrong and the module still initialises
+without complaint — it simply listens at the wrong bit rate and nothing ever
+arrives. This is the most common reason one of these boards appears dead.
+
+## Setting up the ECU
+
+One switch. In TunerStudio: **CAN bus / Testmodes → Dash Broadcasting**, set
+Enable to on, leave Configuration on **Automatic**.
+
+Automatic means base identifier 1512 at 20 Hz, which is what the firmware expects.
+If you move to Advanced and change the identifier, change `CAN_BASE_ID` to match.
+
+## What the display shows
+
+```
+4200rpm  28°  92C  31C
+ 100kPa  85%    3.40ms
+12.8afr (12.5)   14.1V
+ 3.0bar  77%duty
+```
+
+| Row | Values |
+| --- | --- |
+| 1 | engine speed, ignition advance, cylinder head temperature, inlet air temperature |
+| 2 | manifold pressure, throttle position, injector pulse width |
+| 3 | measured AFR, target AFR in brackets, board voltage |
+| 4 | fuel pressure, injector duty cycle |
+
+The character in the bottom right is blank while all four CAN messages keep
+arriving; a digit is the number that have gone quiet. If nothing arrives at all,
+the screen says so and points at the Dash Broadcasting setting.
+
+**Injector duty is calculated here**, not sent by the ECU. It assumes one injector
+opening per engine cycle, which is what sequential injection gives — adjust
+`SQUIRTS_PER_CYCLE` and `ALTERNATE_DIVIDER` if the tune changes to semi-sequential
+or batch.
+
+**Two values from the Speeduino version are gone**, because they are not part of
+the dash broadcast: the idle valve position and the engine status letters (R, C,
+A, W). Their places went to pulse width, target AFR and duty cycle, which are more
+useful while the tune is still being built. If the status bits are ever wanted,
+MegaSquirt can also broadcast its complete realtime block (CAN Broadcasting →
+outpc groups); that carries everything but needs more configuration than one
+switch.
+
+## Project layout
+
+- `src/main.cpp`: the whole firmware, deliberately in one file
+- `platformio.ini`: PlatformIO environment for the Mega 2560 helper board
+- `docs/howToGetStarted.txt`: wiring and setup notes
 - `docs/images/`: reference photos and diagrams
-
-## Features
-
-- Uses Speeduino's enhanced `"n"` command for the larger real-time data block
-- Expects the Speeduino secondary serial protocol to be set to `Generic (Fixed List)`
-- Reads Speeduino through helper-board `Serial1` on pins 19/18
-- Detects invalid, incomplete, and unexpectedly long packets before updating the display
-- Displays fuel pressure on the last line
-- Keeps the firmware logic in a single `main.cpp` while the project is still evolving
+- `lib/NewLiquidCrystal/`: trimmed copy of the LCD library
 
 ## Development
 
 1. Open this folder in VS Code, or open `speeduino_console.code-workspace`.
 2. Install the recommended extensions when VS Code asks for them.
 3. Build and upload with the `megaatmega2560` PlatformIO environment.
-4. If you move the project to a non-Mega helper board, update the serial-port choice in `src/main.cpp` because the current wiring expects hardware `Serial1`.
 
-## Dependency
+```
+pio run                  # build
+pio run --target upload  # flash the helper board
+```
 
-The LCD support uses a vendored subset of fmalpartida's `New-LiquidCrystal` library in `lib/NewLiquidCrystal`, which keeps the original behavior while avoiding unused upstream sources that break AVR builds in PlatformIO.
+The MCP2515 driver is fetched automatically on the first build; see `lib_deps` in
+`platformio.ini`. The LCD support uses a vendored subset of fmalpartida's
+`New-LiquidCrystal` in `lib/NewLiquidCrystal`, which keeps the original behaviour
+while avoiding unused upstream sources that break AVR builds in PlatformIO.
+
+If you move to a board other than a Mega 2560, revisit the SPI and I2C pin numbers
+above — they are fixed by the Mega's hardware.
+
+## Background
+
+The message contents, their scaling and where those numbers were verified are
+documented in the Efignition project repository, `docs/12-console.md`. Short
+version: four messages of eight bytes from identifier 1512, all 16-bit values
+big-endian, temperatures in tenths of a degree Fahrenheit, and injector pulse
+width in 0.666 microsecond timer ticks.
